@@ -1,7 +1,17 @@
 # HD2 SmoothBoot
 
-开发候选：**3.0.11，已运行舰船和任务场景，完整玩法验收及偶发掉帧定位尚未完成。**
-Development candidate: **3.0.11; ship and mission runtime checked, full gameplay acceptance and intermittent hitch diagnosis pending.**
+开发候选：**3.0.12，已运行舰船和任务场景；120+ FPS 的持续对局验收尚未完成，不作为稳定版发布。**
+Development candidate: **3.0.12; ship and mission runtime checked. Sustained 120+ FPS gameplay acceptance remains pending; this is not a stable release.**
+
+3.0.12 保留看门狗在 writer gate 周围安装的计时代理，并让放行后的 writer
+经过同一个下游代理。3.0.3 也存在这个问题：维护会拆除代理，放行会绕过下游
+计时，导致部分模组的读数不再更新。真实源码回归验证维护及放行后代理继续
+每帧运行，下游回调和返回值保持完整；新回归在旧实现上失败，在修复后通过。
+
+真实游戏中 Quasar、尸体清理和车辆冷却的异常排名已消退；这不代表其所有功能
+已经验收，也不能用计时修复解释全部掉帧。用户提供的 3.0.3 与物理移除 Smooth
+的任务测试仍出现 60 FPS。随后管理器停用护甲并重新部署，部署环境发生变化，
+该轮不能混入上述严格对照。看门狗和 P2P HUD 已实机确认恢复，护甲保持停用。
 
 运行游戏后，日志收集器自动生成在
 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\Collect-Logs.bat`。
@@ -12,7 +22,7 @@ Development candidate: **3.0.11; ship and mission runtime checked, full gameplay
 3.0.11 修正接管新链时漏掉下游首帧的问题，并验证多次接管不会重复执行回调。
 相关十二项测试、sb2、sb5、LuaJIT/FFI 审计通过；模拟测试不能代替游戏完整功能验证。
 
-3.0.11 本地候选包在 `dist/HD2-SmoothBoot-3.0.11-candidate.zip`，未上传。
+3.0.12 本地候选包在 `dist/HD2-SmoothBoot-3.0.12-candidate.zip`，未上传。
 历史 3.0.3 可直接导入管理器的 ZIP 在本地 `dist/HD2-SmoothBoot-3.0.3-dev.zip`，线上在
 [测试 Release](https://github.com/YC426/HD2-SmoothBoot/releases/tag/v3.0.3-dev.20261002)。
 不要将 GitHub 自动生成的 Source code ZIP 当作模组安装包。

@@ -17,8 +17,8 @@
 --   * keeps 1.0 behaviour: boot window skip, adaptive skip, stats, config reload
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.11' then return old end
-local M={version='3.0.11',status='starting'}
+if old and old.version=='3.0.12' then return old end
+local M={version='3.0.12',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -409,6 +409,13 @@ end
 -- name keeps our own descent walk able to pass through the gate.
 local function wh_make_gate(writer,nextfn)
     local previous_update=nextfn
+    -- Both gate states must share the same live downstream slot. A profiler
+    -- instruments previous_update while the gate is closed; the original
+    -- writer must also use that slot after release, rather than bypassing it.
+    local writer_next,writer_slot=wh_next(writer)
+    assert(writer_next==nextfn and writer_slot,'writer downstream slot missing')
+    local function downstream(...) return previous_update(...) end
+    debug.setupvalue(writer,writer_slot,downstream)
     local ctl={open=false}
     local busy=false
     local gate=function(...)
@@ -581,18 +588,28 @@ local function wh_full_walk()
             end
         end
     end
-    -- gate maintenance: the watchdog spy storm rewrites previous-slots and
-    -- strips our gates out of above-us callers. Re-splice any gate that no
-    -- longer sits in its slot (closed gates protect, open gates keep the
-    -- writer alive - both must survive). Watchdog re-arms its own probes
-    -- constantly, so displacing one is mutually-healing, not a fight.
+    -- A profiler may wrap our gate. Keep those probes on the live path;
+    -- removing them freezes their inclusive samples and misattributes the
+    -- downstream chain to unrelated mods such as Quasar and corpse cleanup.
+    -- If a probe restored the writer, replace only its direct writer slot.
     local respliced=0
     for name,h in pairs(WH.held) do
         if h.caller and h.gate then
             local _,v=debug.getupvalue(h.caller,h.slot)
-            if v~=h.gate then
-                pcall(debug.setupvalue,h.caller,h.slot,h.gate)
-                respliced=respliced+1
+            local parent,index=h.caller,h.slot
+            local seen={}
+            for depth=1,16 do
+                if v==h.gate then break end
+                if v==h.writer then
+                    pcall(debug.setupvalue,parent,index,h.gate)
+                    respliced=respliced+1
+                    break
+                end
+                if type(v)~='function' or seen[v] or v==wrapper then break end
+                seen[v]=true
+                parent=v
+                v,index=wh_next(v)
+                if not index then break end
             end
         end
     end
