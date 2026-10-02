@@ -3,6 +3,10 @@
 开发源码快照：**3.0.3，后续优化与完整实际游戏验收尚未完成。**
 Development snapshot: **3.0.3; pending optimization and full in-game acceptance.**
 
+可直接导入管理器的 ZIP 在本地 `dist/HD2-SmoothBoot-3.0.3-dev.zip`，线上在
+[测试 Release](https://github.com/YC426/HD2-SmoothBoot/releases/tag/v3.0.3-dev.20261002)。
+不要将 GitHub 自动生成的 Source code ZIP 当作模组安装包。
+
 用于调节 Lua 模组初始化和运行调度。后续重点是 C4 快速投掷/引爆、尸体自动清理、
 舰船与任务初始化速度，以及常态开销。当前不能宣称这些问题已修复或全部功能兼容。
 看门狗重复 hook 计时与自身日志不同，需要真实游戏对照数据解释。
