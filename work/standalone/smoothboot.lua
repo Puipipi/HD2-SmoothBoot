@@ -17,13 +17,38 @@
 --   * keeps 1.0 behaviour: boot window skip, adaptive skip, stats, config reload
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.3' then return old end
-local M={version='3.0.3',status='starting'}
+if old and old.version=='3.0.4' then return old end
+local M={version='3.0.4',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
 local LOG=HOME..'Logs/SmoothBoot.log'
 local CFG=HOME..'SmoothBoot/config.txt'
+-- Create only our own directories, without launching a shell. Resolve a typed
+-- function pointer rather than adding filesystem prototypes to global ffi.C.
+local function ensure_dirs()
+    local ok,err=pcall(function()
+        local ffi=require('ffi')
+        ffi.cdef [[
+            void *GetModuleHandleA(const char *name);
+            void *GetProcAddress(void *module, const char *name);
+        ]]
+        local k32=ffi.load('kernel32')
+        local module=k32.GetModuleHandleA('kernel32.dll')
+        local create=ffi.cast('int (__stdcall *)(const char *, void *)',
+                             k32.GetProcAddress(module,'CreateDirectoryA'))
+        local attr=ffi.cast('unsigned long (__stdcall *)(const char *)',
+                           k32.GetProcAddress(module,'GetFileAttributesA'))
+        for _,path in ipairs({HOME:match('^(.*)Helldivers2/$'),HOME,HOME..'Logs/',HOME..'SmoothBoot/'}) do
+            local normalized=path:gsub('/','\\')
+            if attr(normalized)==4294967295 and create(normalized,nil)==0 then
+                error('cannot create '..path)
+            end
+        end
+    end)
+    return ok,err
+end
+ensure_dirs()
 local log_buf={}      -- watchdog lesson: writes can take 0.4-2s when the
 local log_paused=false -- disk/AV stalls; never write during a panic window
 local function log_flush()
@@ -149,13 +174,20 @@ end
 local unpack=rawget(_G,'unpack') or table.unpack
 
 -- Identify a function with the Bingus declaration chunk name.
+-- Source identity cannot change when an upvalue is re-hooked. Weak keys avoid
+-- keeping discarded watchdog closures alive; cache the failed lookups too.
+local chunk_cache=setmetatable({},{__mode='k'})
+local function function_chunk(fn)
+    if type(fn)~='function' then return '' end
+    local cached=chunk_cache[fn]
+    if cached~=nil then return cached end
+    local ok,info=pcall(debug.getinfo,fn,'S')
+    local name=ok and info and (info.source or ''):match('mods/[%w_./%-]+') or ''
+    chunk_cache[fn]=name
+    return name
+end
 local function identify(fn)
-    if type(fn)~='function' then return nil end
-    local ok,src=pcall(function()
-        return debug.getinfo(fn,'S').source or ''
-    end)
-    if not ok then return nil end
-    return src:match('HD2%-Addon:%s*(mods/[%w_/%-]+)') or src:match('(mods/[%w_/%-]+)')
+    return function_chunk(fn):match('(mods/[%w_/%-]+)')
 end
 
 local PEER_FRAGMENTS={'mods/mdl'}   -- peer loaders: equal-rank chain managers,
@@ -308,6 +340,7 @@ local fi_t,fi_n=0,0     -- rolling frame-interval (seconds, pre-declared for the
 local WH_NEXT_NAMES={'previous_update','original_update','previous','prev',
                      'original','old_update','base_update','next_update'}
 local function wh_frag_match(name)
+    if is_excluded(name,excludes) then return false end
     local list=cfg.writers
     if type(list)~='string' or list=='' then return false end
     for frag in list:gmatch('[%w_./%-]+') do
@@ -316,9 +349,7 @@ local function wh_frag_match(name)
     return false
 end
 local function wh_chunk_of(f)
-    local ok,src=pcall(function() return debug.getinfo(f,'S').source or '' end)
-    if not ok then return '' end
-    return src:match('mods/[%w_./%-]+') or ''
+    return function_chunk(f)
 end
 -- next layer + the slot index in f that holds it; single-function-upvalue
 -- fallback, never descending into ourselves
@@ -698,12 +729,19 @@ local announced={}        -- modnames we already logged about
 -- first-run provisioning: a README explaining every config key and a
 -- one-click log collector land next to config.txt, so users can self-
 -- serve diagnostics without hunting forum posts
-pcall(function()
+local tool_attempts=0
+local function provision_tools()
+    tool_attempts=tool_attempts+1
+    ensure_dirs()
+    local ok,err=pcall(function()
     local dir=HOME..'SmoothBoot/'
     local function wr(n,c)
         local f=io.open(dir..n,'w')
-        if f then f:write(c) f:close() return true end
-        return false
+        if not f then error('cannot open '..dir..n) end
+        local wrote,why=f:write(c)
+        local closed,close_error=f:close()
+        if not wrote or not closed then error(why or close_error or 'write failed') end
+        return true
     end
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
@@ -715,8 +753,8 @@ pcall(function()
   1. Close the game / 关闭游戏
   2. Double-click Collect-Logs.bat / 双击 Collect-Logs.bat
   3. Type C and press Enter / 输入 C 回车
-  4. Send the SmoothBoot-logs.zip from your Desktop with your report
-     把桌面上的 SmoothBoot-logs.zip 随问题报告一起发给作者
+  4. Send the SmoothBoot-logs-*.zip from your Desktop with your report
+     把桌面上的 SmoothBoot-logs-日期.zip 随问题报告一起发给作者
 
 [Exclude one mod from SmoothBoot / 排除一个模组（不让它管）]
   1. Close the game / 关闭游戏
@@ -724,8 +762,8 @@ pcall(function()
   3. Type E and press Enter / 输入 E 回车
   4. Pick the mod by NUMBER and press Enter / 按数字选择模组，回车
   The exact name is written into config.txt for you - nothing to type,
-  nothing to mistype. Delete that line to undo.
-  精确名称会自动写进 config.txt，全程不用打字、不会拼错；删除那一行即撤销。
+  nothing to mistype. Existing exclusions are preserved; remove only this name to undo.
+  精确名称会自动合并进 config.txt 的 exclude= 列表；保留已有排除项，移除该名称即可撤销。
 
 [Advanced: manual config editing / 进阶：手动改配置]
   Edit config.txt in this folder; changes hot-apply within 10 seconds.
@@ -751,27 +789,149 @@ pcall(function()
 [About Mod Lag Watchdog / 关于 watchdog]
   It may report "hooking more than once: smoothboot xN" - that is expected
   (1 governor wrapper + N gates). Its ms/s column can read high for some
-  mods; the authoritative chain cost is the avg value in SmoothBoot's stats
-  lines. / 该提示属预期（1 个治理器+N 个闸门）；真实链开销以 stats 行 avg 为准。
+  mods. SmoothBoot stats measure only its managed chain; compare call counts
+  and the same scene before attributing an individual mod cost.
+  / stats 只记录托管链，不能据此否定看门狗读数；请结合调用次数与同场景数据判断。
 ]===]
     wr('README.txt',readme)
     wr('Collect-Logs.bat',[===[@echo off
-rem SmoothBoot companion tool - run with the game CLOSED
-rem   C = collect logs / mod list / crash records into a Desktop zip
-rem   E = exclude a mod from SmoothBoot by NUMBER (no typing, no typos)
+rem Generated by HD2 SmoothBoot; run with the game closed.
 chcp 65001 >nul
 setlocal
 tasklist /FI "IMAGENAME eq helldivers2.exe" 2>nul | find /I "helldivers2.exe" >nul
 if not errorlevel 1 (
-  echo The game is running. Close it first - collecting while mods are
-  echo writing their logs can lose lines. Then run this again.
+  echo Close the game first / Please close Helldivers 2.
   pause
   exit /b 1
 )
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $base=$env:LOCALAPPDATA+'\CowboyBingus\Helldivers2'; $zip=$env:USERPROFILE+'\Desktop\SmoothBoot-logs.zip'; $mode=Read-Host 'Collect logs for feedback (C) or exclude a mod (E)'; if($mode -eq 'E'){ $lines=Get-Content ($base+'\Logs\SmoothBoot.log'); $inv=($lines | Where-Object {$_ -match 'chain inventory'} | Select-Object -Last 1); if(-not $inv){ Write-Host 'No chain inventory in SmoothBoot.log yet - start the game once first.' } else { $names=$inv -replace '^.*chain inventory[^:]*:',''; $mods=@($names -split ', ' | Where-Object {$_ -match '\.lua$' -and $_ -notmatch 'smoothboot'} | ForEach-Object {$_.Trim()} | Select-Object -Unique); if($mods.Count -eq 0){ Write-Host 'No mods found on the chain.' } else { for($i=0;$i -lt $mods.Count;$i++){ Write-Host (' {0,2}. {1}' -f ($i+1),$mods[$i]) }; $n=Read-Host 'Type the NUMBER of the mod to EXCLUDE then Enter (0 = cancel)'; $idx=0; [void][int]::TryParse($n,[ref]$idx); if($idx -ge 1 -and $idx -le $mods.Count){ $frag=($mods[$idx-1] -replace '\.lua$',''); $cfg=$base+'\SmoothBoot\config.txt'; $cur=((Get-Content $cfg) -join [string][char]10); if($cur -match [regex]::Escape($frag)){ Write-Host ('Already configured: '+$frag) } else { Add-Content -Path $cfg -Value ('exclude='+$frag) -Encoding UTF8; Write-Host ('DONE: exclude='+$frag); Write-Host 'Written to config.txt - delete that line to undo.' } } } } } else { $files=Get-ChildItem -Path ($base+'\Logs\*.log'),($base+'\SmoothBoot\*.txt'),($base+'\SmoothBoot\*.bat') | Select-Object -ExpandProperty FullName; $crash=Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 120 | Where-Object {$_.Message -match 'helldivers'} | ForEach-Object {('{0} {1}' -f $_.TimeCreated, ($_.Message -replace '\s+',' '))}; Compress-Archive -Path $files -DestinationPath $zip -Force; Set-Content -Path ($env:TEMP+'\crashes.txt') -Value $crash -Encoding UTF8; $ml=Get-ChildItem -Path ($env:LOCALAPPDATA+'\hd2arsenal\mods') -Directory | ForEach-Object {$_.Name}; Set-Content -Path ($env:TEMP+'\modlist.txt') -Value $ml -Encoding UTF8; Compress-Archive -Path @($env:TEMP+'\crashes.txt',$env:TEMP+'\modlist.txt') -Update -DestinationPath $zip; Write-Host ('Done: '+$zip) }"
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $base=Join-Path $env:LOCALAPPDATA 'CowboyBingus\Helldivers2'; $stage=$null; try { $mode=Read-Host 'Collect logs (C) / Exclude a mod (E)'; if ($mode -eq 'E') { $log=Join-Path $base 'Logs\SmoothBoot.log'; if (-not (Test-Path -LiteralPath $log)) { throw 'No SmoothBoot.log. Start the game once first.' }; $inv=Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object {$_ -match 'chain inventory'} | Select-Object -Last 1; if (-not $inv) { throw 'No chain inventory yet. Let initialization finish first.' }; $names=$inv -replace '^.*chain inventory[^:]*:',''; $mods=@($names -split ',\s*' | ForEach-Object {$_.Trim()} | Where-Object {$_ -match '^mods/[\w./-]+$' -and $_ -notmatch 'smoothboot|^mods/mdl/'} | Select-Object -Unique); if ($mods.Count -eq 0) { throw 'No manageable mods in the inventory.' }; for($i=0; $i -lt $mods.Count; $i++) { Write-Host (' {0,2}. {1}' -f ($i+1),$mods[$i]) }; $n=Read-Host 'Mod NUMBER (0 = cancel)'; $idx=0; if (-not [int]::TryParse($n,[ref]$idx) -or $idx -lt 0 -or $idx -gt $mods.Count) { throw 'Invalid mod number.' }; if ($idx -gt 0) { $frag=$mods[$idx-1] -replace '\.lua$',''; $cfg=Join-Path $base 'SmoothBoot\config.txt'; $cur=@(); if (Test-Path -LiteralPath $cfg) { $cur=@(Get-Content -LiteralPath $cfg -Encoding UTF8) }; $existing=@($cur | Where-Object {$_ -match '^\s*exclude\s*='} | Select-Object -Last 1); $values=@(); if($existing.Count) { $values=@(($existing[0] -replace '^\s*exclude\s*=\s*','') -split ',' | ForEach-Object {$_.Trim()} | Where-Object {$_}) }; $values=@(@($values)+@($frag) | Select-Object -Unique); $kept=@($cur | Where-Object {$_ -notmatch '^\s*exclude\s*='}); $updated=@($kept)+@('exclude='+($values -join ',')); [IO.File]::WriteAllLines($cfg,$updated,(New-Object Text.UTF8Encoding($false))); Write-Host ('DONE: exclude='+($values -join ',')); Write-Host 'To undo, remove only this mod from the exclude= list.'; }; } elseif ($mode -eq 'C') { if (-not (Test-Path -LiteralPath $base)) { throw 'No mod log directory. Start the game with SmoothBoot enabled first.' }; $desktop=[Environment]::GetFolderPath('Desktop'); if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { $desktop=Join-Path $base 'SmoothBoot' }; $zip=Join-Path $desktop ('SmoothBoot-logs-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+([guid]::NewGuid().ToString('N').Substring(0,6))+'.zip'); $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()); $stage=Join-Path $tempRoot ('SmoothBoot-collect-'+[guid]::NewGuid().ToString('N')); [void][IO.Directory]::CreateDirectory($stage); foreach($group in @('Logs','SmoothBoot')) { $from=Join-Path $base $group; $to=Join-Path $stage $group; [void][IO.Directory]::CreateDirectory($to); if (Test-Path -LiteralPath $from) { Get-ChildItem -LiteralPath $from -File | Where-Object {$_.Extension -in @('.log','.hb','.txt','.bat')} | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $to }; }; }; $crashPath=Join-Path $stage 'crashes.txt'; try { $crash=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000} -MaxEvents 120 -ErrorAction Stop | Where-Object {$_.Message -match 'helldivers'} | ForEach-Object { '{0} {1}' -f $_.TimeCreated,($_.Message -replace '\s+',' ') }); if (-not $crash.Count) {$crash=@('No matching crash records.')}; $crash | Set-Content -LiteralPath $crashPath -Encoding UTF8; } catch { ('Crash records unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath $crashPath -Encoding UTF8 }; $modsRoot=Join-Path $env:LOCALAPPDATA 'hd2arsenal\mods'; $rows=@(); if(Test-Path -LiteralPath $modsRoot) { $rows=@(Get-ChildItem -LiteralPath $modsRoot -Directory | ForEach-Object { $_.Name }) }; $rows | Set-Content -LiteralPath (Join-Path $stage 'modlist.txt') -Encoding UTF8; $db=Join-Path $env:LOCALAPPDATA 'hd2arsenal\hd2a_data.json'; if(Test-Path -LiteralPath $db) { try { $data=Get-Content -LiteralPath $db -Raw -Encoding UTF8 | ConvertFrom-Json; $data.modsList.default.mods | Select-Object label,enabled,deployed | Export-Csv -LiteralPath (Join-Path $stage 'mod-status.csv') -NoTypeInformation -Encoding UTF8; } catch { ('Mod status unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath (Join-Path $stage 'mod-status-error.txt') -Encoding UTF8 }; }; Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip; if(-not (Test-Path -LiteralPath $zip)) { throw 'Log ZIP was not created.' }; Write-Host ('Done: '+$zip); } else { throw 'Choose C or E.' }; } catch { Write-Host ('FAILED: '+$_.Exception.Message); exit 1 } finally { if($stage -and (Test-Path -LiteralPath $stage)) { $resolved=[IO.Path]::GetFullPath($stage); if($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved) -match '^SmoothBoot-collect-[0-9a-f]{32}$') { [IO.Directory]::Delete($resolved,$true) } } }"
+set "collector_result=%errorlevel%"
 pause
+exit /b %collector_result%
 ]===])
-end)
+    end)
+    M.tools_ready=ok
+    if ok then
+        log('companion tools ready: '..HOME..'SmoothBoot/Collect-Logs.bat')
+    elseif tool_attempts==1 or tool_attempts==6 then
+        log('companion tools not ready: '..tostring(err))
+    end
+end
+provision_tools()
+
+-- Diagnostics read published state only: no native action or foreign state
+-- mutation. This also covers third-party mods whose own logging is off.
+local function runtime_snapshot()
+    for _,key in ipairs({'HD2C4BoundaryProbe','ModBindingsMenu','TweaksMod','CorpseCleanup',
+                         'HD2VehicleCooldown','TankCooldown','MDL'}) do
+        local state=rawget(_G,key)
+        if type(state)=='table' then
+            local values={}
+            for field,value in next,state do
+                local kind=type(value)
+                if type(field)=='string' and (kind=='string' or kind=='number' or kind=='boolean') then
+                    values[#values+1]=field..'='..tostring(value):gsub('[\r\n]',' '):sub(1,300)
+                end
+            end
+            table.sort(values)
+            log('runtime state '..key..': '..table.concat(values,', '))
+        else
+            log('runtime state '..key..': absent')
+        end
+    end
+end
+local function c4_snapshot()
+    -- Watchdog can keep the real callback in a table field rather than a
+    -- previous upvalue. Read the bounded closure graph; never replace slots.
+    local queue,seen={},{}
+    local function enqueue(value)
+        local kind=type(value)
+        if (kind=='function' or kind=='table') and not seen[value]
+           and value~=_G and value~=package and value~=rawget(_G,'stingray') then
+            seen[value]=true queue[#queue+1]=value
+        end
+    end
+    enqueue(rawget(_G,'update')) enqueue(head_above) enqueue(WH.entry) enqueue(base_prev)
+    local captured={}
+    local saw_c4=false
+    local detail_seen={}
+    local detail_count=0
+    local function c4_details(root)
+        -- Follow the C4 helper functions immediately. Watchdog metadata can
+        -- otherwise fill the generic queue before tick's state is reached.
+        -- Its spy/timer exposes the wrapped function as the target upvalue.
+        local pending={root}
+        while #pending>0 and detail_count<256 do
+            local fn=table.remove(pending)
+            if not detail_seen[fn] then
+                detail_seen[fn]=true detail_count=detail_count+1
+                local chunk=wh_chunk_of(fn)
+                local c4=chunk:find('mods/etxp/c4_boundary_probe',1,true)~=nil
+                local spy=chunk:find('mods/patpatpatrick/mod_lag_finder',1,true)~=nil
+                if c4 or spy then
+                    for index=1,64 do
+                        local name,next_=debug.getupvalue(fn,index)
+                        if not name then break end
+                        if c4 and (name=='bindings' or name=='gameplay_guard' or name=='gate' or name=='actions')
+                           and type(next_)=='table' then captured[name]=next_ end
+                        if type(next_)=='function' and (c4 or name=='target') then
+                            pending[#pending+1]=next_
+                        end
+                    end
+                end
+            end
+            if captured.bindings and captured.gameplay_guard and captured.gate and captured.actions then break end
+        end
+    end
+    local at=1
+    while at<=#queue and at<=512 do
+        local value=queue[at] at=at+1
+        if type(value)=='function' then
+            local chunk=wh_chunk_of(value)
+            local is_c4=chunk:find('mods/etxp/c4_boundary_probe',1,true)~=nil
+            if is_c4 then saw_c4=true c4_details(value) end
+            if value==wrapper then
+                enqueue(head_above) enqueue(WH.entry) enqueue(base_prev)
+            elseif chunk:find('mods/',1,true) then
+                for i=1,64 do
+                    local name,next_=debug.getupvalue(value,i)
+                    if not name then break end
+                    if is_c4 and (name=='bindings' or name=='gameplay_guard' or name=='gate' or name=='actions')
+                       and type(next_)=='table' then captured[name]=next_ end
+                    if name~='engine' and name~='sr' and name~='G' then enqueue(next_) end
+                end
+            end
+        elseif getmetatable(value)==nil then
+            local count=0
+            for _,next_ in next,value do
+                count=count+1 if count>64 then break end
+                enqueue(next_)
+            end
+        end
+        if captured.bindings and captured.gameplay_guard and captured.gate and captured.actions then break end
+    end
+    if not captured.bindings then
+        log('runtime C4 details: binding closure not found; callback='..tostring(saw_c4)..' nodes='..(at-1))
+    end
+    for name,state in pairs(captured) do
+        local values={}
+        local function read(table_,prefix)
+            for key,value in next,table_ do
+                local kind=type(value)
+                if type(key)=='string' and (kind=='string' or kind=='number' or kind=='boolean') then
+                    values[#values+1]=prefix..key..'='..tostring(value):gsub('[\r\n]',' '):sub(1,300)
+                end
+            end
+        end
+        read(state,'')
+        for _,key in ipairs({'latest','previous','registered'}) do
+            local nested=rawget(state,key)
+            if type(nested)=='table' then read(nested,key..'.') end
+        end
+        table.sort(values)
+        log('runtime C4 '..name..': '..table.concat(values,', '))
+    end
+end
 
 log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d',
     M.version,tostring(previous~=nil),skip,#excludes))
@@ -1214,6 +1374,7 @@ wrapper=function(...)
         if frames%600==0 then hb('alive frames='..frames) end
     end
     if frames==1 then
+        if cfg.diag then pcall(runtime_snapshot) end
         local hh=rawget(_G,'update')
         local who='?'
         if hh~=wrapper then
@@ -1236,6 +1397,13 @@ wrapper=function(...)
         head_above=nil
     end
     local head=rawget(_G,'update')
+    local transition_target=nil
+    if head~=wrapper and head==head_above then
+        -- The adopted function has moved above us and is already executing
+        -- this frame. Calling it again below us duplicates its own work.
+        head_above=nil
+        log('adopted head moved above SmoothBoot; using its existing call chain')
+    end
     if head~=wrapper then
         local who=identify(head)
         if who then
@@ -1279,6 +1447,7 @@ wrapper=function(...)
                 idx=idx+1
             end
             if slot then
+                transition_target=head_above or (WH.entry or base_prev)
                 if head_above then debug.setupvalue(head,slot,head_above) end
                 adopts=adopts+1
                 adopted_once[who]=true
@@ -1286,8 +1455,8 @@ wrapper=function(...)
                 gov_mark=frames
                 rawset(_G,'update',wrapper)
                 log('adopted chain head back from '..who..' (governor active again)')
-                skipped=skipped+1
-                return -- transition frame: this call already went through the old head
+                -- Its own callback already ran above us, but the below-chain
+                -- has not run yet. Preserve it on this transition frame too.
             else
                 if not announced['<noslice:'..who..'>'] then
                     announced['<noslice:'..who..'>']=true
@@ -1333,6 +1502,7 @@ wrapper=function(...)
     end
     if os.clock()-last_cfg>10 then
         last_cfg=os.clock()
+        if not M.tools_ready and tool_attempts<6 then provision_tools() end
         cfg=conf()
         excludes=excluded_list(cfg.exclude or '')
         pcall(M.frag_check)
@@ -1398,7 +1568,7 @@ wrapper=function(...)
         ap_restore()
     end
 
-    local target=head_above or (WH.entry or base_prev)
+    local target=transition_target or head_above or (WH.entry or base_prev)
     if not target then return end
     if not cfg.enabled then
         inside=true
@@ -1497,6 +1667,8 @@ wrapper=function(...)
     end
 
     if frames%1800==0 then
+        if cfg.diag then pcall(runtime_snapshot) end
+        if cfg.diag then pcall(c4_snapshot) end
         local top={}
         for k,v in pairs(err_top) do top[#top+1]=k..'='..v end
         table.sort(top,function(a,b) return tonumber(a:match('=(%d+)$'))>tonumber(b:match('=(%d+)$')) end)

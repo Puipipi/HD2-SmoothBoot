@@ -27,7 +27,7 @@ import lupa
 W = os.path.dirname(os.path.abspath(__file__))
 SRC = open(os.path.join(W, "smoothboot.lua"), encoding="utf-8").read()
 VER = re.search(r"version='([\d.]+)'", SRC).group(1)
-assert VER == "3.0.3"
+assert VER.startswith("3."), 'suite covers the 3.x writer-gate implementation'
 
 REAL = os.path.join(os.environ["LOCALAPPDATA"], "CowboyBingus", "Helldivers2")
 

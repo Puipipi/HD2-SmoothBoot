@@ -278,7 +278,8 @@ def case_adopt(mod):
     xc = int(g["__X_state"]["calls"]); bc = int(chain["calls"])
     assert 8 <= xc <= 20, "covered mod must be throttled (busy chain): %d" % xc
     # xc includes the transition frame where the engine still called X as head
-    assert bc == xc - 1, "no double-run: base chain once per governed call (%d vs %d)" % (bc, xc)
+    # The adoption frame now forwards the below-chain too; no lost first input.
+    assert bc == xc, "no double-run: base chain once per governed call (%d vs %d)" % (bc, xc)
     shutil.rmtree(FAKE_LA, ignore_errors=True)
     return "adopt: takes head back, throttles the busy late mod (%d/60), no double-run" % xc
 
