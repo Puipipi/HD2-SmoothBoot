@@ -17,8 +17,8 @@
 --   * keeps 1.0 behaviour: boot window skip, adaptive skip, stats, config reload
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.4' then return old end
-local M={version='3.0.4',status='starting'}
+if old and old.version=='3.0.7' then return old end
+local M={version='3.0.7',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -86,7 +86,14 @@ end
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,
                     trip_ms=50,trip_n=3,pause_s=5,exclude='',gc_pause=400,gc_stepmul=0,peer_suspend=true,ui_mods='',scanners='',hud_lang='auto',hud='on',boot_pause_s=10,
-                    writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit'}
+                    writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
+                    -- 3.0.5+ adaptive release gate: release every writer_min_stagger_s
+                    -- while the frame cadence is near this machine's own best, and
+                    -- wait whenever it drifts past writer_fi_factor * best (capped at
+                    -- writer_fi_floor_ms * 2.5). The old gate only waited above a flat
+                    -- 40 ms, so a 60 FPS task window - exactly where these writer
+                    -- writes detonate - counted as calm and every release landed in it.
+                    writer_min_stagger_s=1,writer_fi_factor=3,writer_fi_floor_ms=12}
     local ok,text=pcall(function()
         local f=io.open(CFG,'r')
         if not f then return nil end
@@ -161,7 +168,8 @@ local function conf()
         if v then defaults.peer_suspend=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
-                             'writer_release_s','writer_stagger_s'}) do
+                             'writer_release_s','writer_stagger_s',
+                             'writer_min_stagger_s','writer_fi_factor','writer_fi_floor_ms'}) do
             v=line:match('^%s*'..key..'%s*=%s*(%d+%.?%d*)%s*$')
             if v then defaults[key]=tonumber(v) end
         end
@@ -670,21 +678,45 @@ local function wh_release_step()
     local now=os.clock()
     if not WH.next_release then WH.next_release=now end
     if now<WH.next_release then return end
-    -- engine-quiet gate: only release while the frame cadence is calm
-    -- (releasing into a hitch/loading window maximises the chance the
-    -- writer scans against tables that are moving under it)
-    if fi_n>=120 then
-        local avg_frame=fi_t/fi_n
-        if avg_frame>0.040 or (WH.dt_spike or 0)>0.100 then
-            WH.quiet_waits=(WH.quiet_waits or 0)+1
+    -- engine-quiet gate: only release while the frame cadence is close to this
+    -- machine's own best. 3.0.5 learned fi_best during the boot hitch (25.8 ms)
+    -- and then relaxed it every frame, so the limit sat at 77 ms and the gate
+    -- could not fail; 3.0.6 kept a historical minimum but still authorised
+    -- best*3 = 85 ms for the whole session; 3.0.7 caps the limit as well. The
+    -- floor stops one absurdly fast frame from making the gate unsatisfiable,
+    -- and the forced release stops the writers being held forever.
+    local fi_now=fi_n>0 and (fi_t/fi_n) or 0
+    if fi_now>0 and (not WH.fi_best or fi_now<WH.fi_best) then
+        WH.fi_best=math.max(fi_now,0.003)
+    end
+    local fi_floor=(cfg.writer_fi_floor_ms or 12)/1000
+    local fi_factor=cfg.writer_fi_factor or 3
+    local fi_limit=math.min(math.max((WH.fi_best or 0)*fi_factor,fi_floor),fi_floor*2.5)
+    local calm=fi_now>0 and fi_now<=fi_limit and (WH.dt_spike or 0)<=fi_limit
+    if fi_now>0 and not calm then
+        WH.quiet_waits=(WH.quiet_waits or 0)+1
+        WH.wait_since=WH.wait_since or now
+        local max_wait=(cfg.writer_stagger_s or 8)*3
+        if now-WH.wait_since>=max_wait then
+            log(string.format('writer hold: forcing release after %.0fs - engine never calmed'
+                ..' (frame %.1fms, limit %.1fms)',now-WH.wait_since,fi_now*1000,fi_limit*1000))
+            WH.wait_since=now
+        else
             if WH.quiet_waits%15==1 then
-                log('writer hold: release waiting for a calm engine window')
+                log(string.format('writer hold: release waiting for a calm engine window'
+                    ..' (frame %.1fms > limit %.1fms, best %.1fms)',
+                    fi_now*1000,fi_limit*1000,(WH.fi_best or 0)*1000))
             end
             WH.next_release=now+1
             return
         end
+    else
+        WH.wait_since=now
     end
-    WH.next_release=now+(cfg.writer_stagger_s or 45)
+    local fast=math.min(cfg.writer_min_stagger_s or 1,cfg.writer_stagger_s or 45)
+    log(string.format('writer hold: gate calm - releasing (frame %.1fms, limit %.1fms, best %.1fms)',
+        fi_now*1000,fi_limit*1000,(WH.fi_best or 0)*1000))
+    WH.next_release=now+(calm and fast or (cfg.writer_stagger_s or 45))
     while WH.released<#order do
         local name=order[WH.released+1]
         local h=WH.held[name]
