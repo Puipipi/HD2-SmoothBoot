@@ -17,8 +17,8 @@
 --   * keeps 1.0 behaviour: boot window skip, adaptive skip, stats, config reload
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.7' then return old end
-local M={version='3.0.7',status='starting'}
+if old and old.version=='3.0.8' then return old end
+local M={version='3.0.8',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -87,13 +87,19 @@ local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,
                     trip_ms=50,trip_n=3,pause_s=5,exclude='',gc_pause=400,gc_stepmul=0,peer_suspend=true,ui_mods='',scanners='',hud_lang='auto',hud='on',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
+                    -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
+                    -- Measured in-mission on this machine with the same mod set:
+                    -- 1 s releases gave 33 FPS, 8 s releases gave 69.8 FPS, and the
+                    -- held writers' writes are the ones known to detonate later
+                    -- (see the 0x66d26c note above). Set it to 1 for a ~5 s boot if
+                    -- you accept that risk; the adaptive gate below still applies.
                     -- 3.0.5+ adaptive release gate: release every writer_min_stagger_s
                     -- while the frame cadence is near this machine's own best, and
                     -- wait whenever it drifts past writer_fi_factor * best (capped at
                     -- writer_fi_floor_ms * 2.5). The old gate only waited above a flat
                     -- 40 ms, so a 60 FPS task window - exactly where these writer
                     -- writes detonate - counted as calm and every release landed in it.
-                    writer_min_stagger_s=1,writer_fi_factor=3,writer_fi_floor_ms=12}
+                    writer_min_stagger_s=8,writer_fi_factor=3,writer_fi_floor_ms=12}
     local ok,text=pcall(function()
         local f=io.open(CFG,'r')
         if not f then return nil end
