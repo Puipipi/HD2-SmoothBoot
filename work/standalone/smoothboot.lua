@@ -17,8 +17,8 @@
 --   * keeps 1.0 behaviour: boot window skip, adaptive skip, stats, config reload
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.8' then return old end
-local M={version='3.0.8',status='starting'}
+if old and old.version=='3.0.10' then return old end
+local M={version='3.0.10',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -84,7 +84,7 @@ if not loader then
 end
 
 local function conf()
-    local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,
+    local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
                     trip_ms=50,trip_n=3,pause_s=5,exclude='',gc_pause=400,gc_stepmul=0,peer_suspend=true,ui_mods='',scanners='',hud_lang='auto',hud='on',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
@@ -164,6 +164,10 @@ local function conf()
         if v then defaults.hud_lang=v:lower() end
         v=line:match('^%s*diag%s*=%s*(%a+)%s*$')
         if v then defaults.diag=(v=='yes' or v=='true' or v=='on') end
+        -- 3.0.10: the closure-graph snapshots cost ~10 ms per run and retain
+        -- third-party tables; keep them behind their own switch, never diag.
+        v=line:match('^%s*snapshot%s*=%s*(%a+)%s*$')
+        if v then defaults.snapshot=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*boot_freeze_s%s*=%s*(%d+%.?%d*)%s*$')
         if v then defaults.boot_freeze_s=tonumber(v) end
         v=line:match('^%s*hud%s*=%s*(%a+)%s*$')
@@ -1412,7 +1416,7 @@ wrapper=function(...)
         if frames%600==0 then hb('alive frames='..frames) end
     end
     if frames==1 then
-        if cfg.diag then pcall(runtime_snapshot) end
+        if cfg.snapshot then pcall(runtime_snapshot) end
         local hh=rawget(_G,'update')
         local who='?'
         if hh~=wrapper then
@@ -1435,7 +1439,6 @@ wrapper=function(...)
         head_above=nil
     end
     local head=rawget(_G,'update')
-    local transition_target=nil
     if head~=wrapper and head==head_above then
         -- The adopted function has moved above us and is already executing
         -- this frame. Calling it again below us duplicates its own work.
@@ -1485,7 +1488,6 @@ wrapper=function(...)
                 idx=idx+1
             end
             if slot then
-                transition_target=head_above or (WH.entry or base_prev)
                 if head_above then debug.setupvalue(head,slot,head_above) end
                 adopts=adopts+1
                 adopted_once[who]=true
@@ -1493,8 +1495,13 @@ wrapper=function(...)
                 gov_mark=frames
                 rawset(_G,'update',wrapper)
                 log('adopted chain head back from '..who..' (governor active again)')
-                -- Its own callback already ran above us, but the below-chain
-                -- has not run yet. Preserve it on this transition frame too.
+                -- 3.0.9: back to the 3.0.3 semantics. 3.0.4 let this frame fall
+                -- through and run the below-chain too, which ran the whole chain
+                -- twice on every adoption: held mods advanced twice per frame
+                -- (CorpseCleanup's attempt kept climbing) and the extra work
+                -- compounds, which is the FPS slide 3.0.3 never showed.
+                skipped=skipped+1
+                return -- transition frame: this call already went through the old head
             else
                 if not announced['<noslice:'..who..'>'] then
                     announced['<noslice:'..who..'>']=true
@@ -1606,7 +1613,7 @@ wrapper=function(...)
         ap_restore()
     end
 
-    local target=transition_target or head_above or (WH.entry or base_prev)
+    local target=head_above or (WH.entry or base_prev)
     if not target then return end
     if not cfg.enabled then
         inside=true
@@ -1705,8 +1712,8 @@ wrapper=function(...)
     end
 
     if frames%1800==0 then
-        if cfg.diag then pcall(runtime_snapshot) end
-        if cfg.diag then pcall(c4_snapshot) end
+        if cfg.snapshot then pcall(runtime_snapshot) end
+        if cfg.snapshot then pcall(c4_snapshot) end
         local top={}
         for k,v in pairs(err_top) do top[#top+1]=k..'='..v end
         table.sort(top,function(a,b) return tonumber(a:match('=(%d+)$'))>tonumber(b:match('=(%d+)$')) end)
