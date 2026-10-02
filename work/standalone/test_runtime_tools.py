@@ -97,7 +97,9 @@ class RuntimeTools(unittest.TestCase):
             original = b'exclude=mods/test/keep\r\nwriter_release_s=23\r\n'
             config.write_bytes(original)
             start(root)
-            self.assertEqual(config.read_bytes(), original)
+            self.assertTrue(config.read_bytes().startswith(original),'existing settings changed during migration')
+            effective=re.findall(r'^exclude=(.*)$',config.read_text(encoding='utf-8'),re.M)[-1].split(',')
+            self.assertEqual(set(effective),{'mods/test/keep','lte/helmet_cape_passives'})
 
     def test_picker_preserves_existing_exclusions(self):
         with tempfile.TemporaryDirectory(prefix='sb-tools-') as tmp:
@@ -132,7 +134,8 @@ class RuntimeTools(unittest.TestCase):
             answers = "$script:answers=@('E','1'); $script:answer=0; function Read-Host { $r=$script:answers[$script:answer]; $script:answer++; return $r }; "
             result = subprocess.run(['powershell.exe', '-NoProfile', '-Command', answers + command], env=dict(os.environ, LOCALAPPDATA=str(root)), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('exclude=mods/test/extensionless', (folder / 'config.txt').read_text(encoding='utf-8-sig'))
+            effective=re.findall(r'^exclude=(.*)$',(folder/'config.txt').read_text(encoding='utf-8-sig'),re.M)[-1].split(',')
+            self.assertEqual(set(effective),{'lte/helmet_cape_passives','mods/test/extensionless'})
 
 
 if __name__ == '__main__':

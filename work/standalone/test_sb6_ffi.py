@@ -279,62 +279,27 @@ info = str(rt.execute(CHAIN_HEAD + RUN + r'''
     if #missing > 0 then return 'missing: ' .. table.concat(missing, ',') end
     return 'all resolvable'
 '''))
-check("6  HUD window APIs resolvable at runtime", info == "all resolvable", info)
+check("6  Windows APIs still resolvable at runtime", info == "all resolvable", info)
 
 # ---------------------------------------------------------------- scenario 7
-# The changed code path itself: drive the real banner so hud_click() runs the
-# GetProcAddress-bound sampler against the live Windows APIs.
+# No compatibility popup remains, even for the original protected mod marker.
 rt = runtime()
 g = rt.globals()
-g["src"] = sandboxed()
-hud = str(rt.execute(CHAIN_HEAD + RUN + r'''
-    -- a deliberately slow mod below us: makes the chain "busy" so the banner
-    -- is armed and its button polling (the sampler under test) actually runs
-    local slow = [==[
-        local prev = update
-        update = function(...)
-            local t = os.clock()
-            while os.clock() - t < 0.02 do end
-            return prev(...)
-        end
-    ]==]
-    loadstring(slow, '@mods/fake/slow')()
-    -- the CAK stingray recipe, faked: create_screen_gui succeeds so HUD.gui is
-    -- set and the later ticks poll the mouse
-    local w1, main = {name = 'w1'}, {name = 'main'}
-    _G.stingray = {
-        Gui = { resolution = function() return 1920, 1080 end,
-                rect = function() end },
-        Vector3 = function(x, y, z) return {x, y, z} end,
-        Vector2 = function(x, y) return {x, y} end,
-        Color = function(r, g, b, a) return {r, g, b, a} end,
-        World = { create_screen_gui = function() return {} end,
-                  destroy_gui = function() end },
-        Application = { worlds = function() return {w1, main} end,
-                        main_world = function() return main end },
-    }
-    local e = run(src, '@mods/codex/smoothboot')
-    if e then return 'smoothboot ' .. e end
-    local M = rawget(_G, 'HD2SmoothBoot')
-    for i = 1, 400 do
-        local ok, err = pcall(_G.update, 1/60)
-        if not ok then return 'update threw: ' .. tostring(err) end
+g['src'] = sandboxed()
+no_popup = str(rt.execute(CHAIN_HEAD + RUN + r'''
+    _G.LTE_helmet_cape_passives={}
+    _G.stingray={World={create_screen_gui=function() error('popup was created') end},
+                 Gui={rect=function() error('popup rendered') end}}
+    local e=run(src,'@mods/codex/smoothboot')
+    if e then return e end
+    for i=1,400 do
+        local ok,why=pcall(update,1/60)
+        if not ok then return tostring(why) end
     end
-    if not M._hud_draw then
-        return 'banner never armed (hud_k=' .. tostring(M._hud_k) .. ')'
-    end
-    local p = (os.getenv('LOCALAPPDATA') or '.') ..
-              '/SB603FFI/Helldivers2/Logs/SmoothBoot.log'
-    local fh = io.open(p, 'r')
-    local logtxt = fh and fh:read('*a') or ''
-    if fh then fh:close() end
-    if logtxt:find('hud disabled', 1, true) then return 'hud disabled' end
-    return 'armed hud_k=' .. tostring(M._hud_k) .. ' | ' .. tostring(M._hud_draw)
+    if HD2SmoothBoot._hud_draw or HD2SmoothBoot.hud_notice then return 'HUD remains' end
+    return 'no popup'
 '''))
-check("7  live sampler runs (banner armed, mouse polling OK)",
-      hud.startswith("armed"), hud[:200])
-if hud.startswith("armed"):
-    print("       %s" % hud[:170])
+check('7  popup removed; protected marker still runs safely', no_popup=='no popup',no_popup)
 
 # ---------------------------------------------------------------- verdict
 failed = [n for n, ok, _ in results if not ok]

@@ -15,10 +15,17 @@
 --   * v2.8.3: engine probes removed again - zero engine calls is a hard rule
 --   * per-mod error attribution from Lua error chunk names, Top N in stats
 --   * keeps 1.0 behaviour: boot window skip, adaptive skip, stats, config reload
+-- 3.0.13: the reload guard used to compare against the *previous* version
+-- literal, so bumping the version silently disabled double-load protection
+-- (a second loadstring of the same source re-wrapped _G.update - caught by
+-- test_sb3_autopause.py scenario 3).
+-- !! The two version literals below MUST be bumped together. build_sb.py and
+-- !! test_sb3_autopause.py both regex for version='X.Y.Z', so neither can be a
+-- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.12' then return old end
-local M={version='3.0.12',status='starting'}
+if old and old.version=='3.0.21' then return old end
+local M={version='3.0.21',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -85,7 +92,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='',gc_pause=400,gc_stepmul=0,peer_suspend=true,ui_mods='',scanners='',hud_lang='auto',hud='on',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -117,7 +124,7 @@ local function conf()
                 w:write('# deploy order no longer matters: it re-heads itself automatically\n')
                 w:write('enabled=yes\n')
                 w:write('# adaptive skip only kicks in above busy_ms per chain call (throttle=no to disable)\n')
-                w:write('throttle=yes\nprofile=yes\n')
+                w:write('throttle=auto\nprofile=yes\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -136,7 +143,7 @@ local function conf()
                 w:write('# breaker: chain over trip_ms for trip_n calls pauses it for pause_s seconds\n')
                 w:write('trip_ms=50\ntrip_n=3\npause_s=5\n')
                 w:write('# comma separated mod path fragments that must NOT be managed\n')
-                w:write('exclude=\n')
+                w:write('exclude=lte/helmet_cape_passives\n')
                 w:write('# GC tuning for the whole mod ecosystem (0 = engine defaults)\n')
                 w:write('gc_pause=400\ngc_stepmul=0\n')
                 w:close()
@@ -144,6 +151,30 @@ local function conf()
         end)
         return defaults
     end
+    -- One-time upgrade: preserve custom exclusions, add only the reported LTE
+    -- mod. A marker lets users subsequently remove this entry themselves.
+    pcall(function()
+        local marker=HOME..'SmoothBoot/exclusions-3.0.21.txt'
+        local done=io.open(marker,'r')
+        if done then done:close();return end
+        local spec=''
+        for line in text:gmatch('[^\r\n]+') do
+            local value=line:match('^%s*exclude%s*=%s*([%w%./_,%-]*)%s*$')
+            if value then spec=value end
+        end
+        local found=false
+        for value in spec:gmatch('[%w%./_%-]+') do
+            if value=='lte/helmet_cape_passives' then found=true end
+        end
+        if not found then
+            local merged=spec..(spec~='' and ',' or '')..'lte/helmet_cape_passives'
+            local f=assert(io.open(CFG,'a'))
+            local addition='\nexclude='..merged..'\n'
+            assert(f:write(addition));f:close();text=text..addition
+            log('default exclusion added: mods/lte/helmet_cape_passives (reported variant creation conflict)')
+        end
+        local f=assert(io.open(marker,'w'));f:write('applied\n');f:close()
+    end)
     for line in text:gmatch('[^\r\n]+') do
         local v
         v=line:match('^%s*enabled%s*=%s*(%a+)%s*$')
@@ -160,8 +191,6 @@ local function conf()
         if v then defaults.writer_norelease=v end
         v=line:match('^%s*ui_chunks%s*=%s*([%w_./,%-]*)%s*$')
         if v then defaults.ui_chunks=v end
-        v=line:match('^%s*hud_lang%s*=%s*(%a+)%s*$')
-        if v then defaults.hud_lang=v:lower() end
         v=line:match('^%s*diag%s*=%s*(%a+)%s*$')
         if v then defaults.diag=(v=='yes' or v=='true' or v=='on') end
         -- 3.0.10: the closure-graph snapshots cost ~10 ms per run and retain
@@ -170,8 +199,6 @@ local function conf()
         if v then defaults.snapshot=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*boot_freeze_s%s*=%s*(%d+%.?%d*)%s*$')
         if v then defaults.boot_freeze_s=tonumber(v) end
-        v=line:match('^%s*hud%s*=%s*(%a+)%s*$')
-        if v then defaults.hud=(v:lower()~='off') end
         v=line:match('^%s*profile%s*=%s*(%a+)%s*$')
         if v then defaults.profile=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*peer_suspend%s*=%s*(%a+)%s*$')
@@ -183,7 +210,7 @@ local function conf()
             v=line:match('^%s*'..key..'%s*=%s*(%d+%.?%d*)%s*$')
             if v then defaults[key]=tonumber(v) end
         end
-        v=line:match('^%s*exclude%s*=%s*([%w%./_,%-]+)%s*$')
+        v=line:match('^%s*exclude%s*=%s*([%w%./_,%-]*)%s*$')
         if v then defaults.exclude=v end
     end
     return defaults
@@ -443,6 +470,20 @@ local function wh_make_gate(writer,nextfn)
     end
     return gate,ctl
 end
+M.find_excluded_below=function()
+    local cur=head_above or WH.entry or base_prev
+    local seen,names,added={},{},{}
+    for depth=1,128 do
+        if type(cur)~='function' or seen[cur] then break end
+        seen[cur]=true
+        local name=function_chunk(cur)
+        if name~='' and is_excluded(name,excludes) and not added[name] then
+            added[name]=true;names[#names+1]=name
+        end
+        if cur==wrapper then cur=WH.entry or base_prev else cur=wh_next(cur) end
+    end
+    return names
+end
 -- full-chain writer interdiction: every couple of seconds, walk the LIVE
 -- chain from whatever head the engine currently calls, down through
 -- ourselves, to the game bottom. Any layer whose chunk matches the writer
@@ -496,6 +537,7 @@ local function wh_full_walk()
                 for frag in list:gmatch('[%w_./%-]+') do
                     if frag~='' and name:find(frag,1,true) then
                         M._fc_found=true
+                        M._fc_source=name
                         ui_present=true
                         log('frame-critical mod on chain ('..name..') - throttling suspended')
                         break
@@ -845,7 +887,11 @@ local function provision_tools()
     / 默认永久扣留 m103 炮塔写入器（其延迟写入实测必崩）；自担风险放开：
     / 在 config.txt 写一行 writer_norelease= （等号后留空）
   ui_chunks=FRAG,...    frame-critical mods / 关键帧模组保护
-  throttle=auto/yes/no, hud=on/off, diag=yes/no ...
+  No compatibility popup: timing and registration cannot prove lost functionality.
+  / 没有兼容弹窗：耗时和注册状态不能证明第三方功能被破坏。
+  LTE Helmet and Cape Passives is excluded by default after the reported variant issue.
+  / 默认排除LTE头盔/披风被动模组；Armor Transmog没有新增排除。
+  throttle=auto/yes/no, diag=yes/no ...
   Where do fragments come from? The "chain inventory" line in SmoothBoot.log
   lists every mod's exact name - copy any unique piece. If you mistype one,
   the log will say: config check: ... did you mean "..."?
@@ -1002,412 +1048,6 @@ log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d',
     M.version,tostring(previous~=nil),skip,#excludes))
 
 
--- ===== throttle HUD (right-top pixel banner, Gui.rect only) ==============
--- Recipe verified on this machine by the Custom Armor Kit / MultiPerk 1.1.1
--- dock: create_screen_gui(world,'scale',1,1) + Gui.rect + sr.Color. No
--- Gui.text, no material, no atlas - the only primitives that have never
--- faulted. Every stingray call is wrapped in pcall; the first failure
--- disables the banner for the rest of the session.
-local SCANNER_GLOBALS={'mods/dsh/ac8_rack_backpack','HD2_NoLargePiercing_Owner'}
--- user32 cursor sampling (Custom-Armor-Kit recipe) for the banner buttons.
---
--- FFI NAMESPACE RULE (3.0.3, Nexus bug report 2026-10-01): LuaJIT's C
--- namespace is PROCESS-GLOBAL and ffi.cdef SILENTLY IGNORES a re-declaration
--- of a symbol that is already declared - the first declaration wins and every
--- later caller is type-checked against it (the re-declaration raises nothing,
--- so a pcall around ffi.cdef cannot detect it). Declaring the cursor APIs here
--- is exactly what broke Clickable Scrollbars 2.14: its own
---   int GetCursorPos(HD2CS_POINT *) / int GetClientRect(void*, HD2CS_RECT *)
--- was dropped in favour of our int32_t * versions, so its very first
--- calibration call died with
---   GetCursorPos: bad argument #1 (cannot convert 'struct N [1]' to 'int *')
--- and the mod disabled itself for the session (ClickableScrollbars.log:
--- status=disabled; Nexus: "causes the Clickable Scrollbars part of Vanilla+ to
--- cease functioning"). So: never declare a user32 symbol again. Resolve the
--- addresses through kernel32 and ffi.cast each one to the prototype we call.
--- GetModuleHandleA/GetProcAddress are the only symbols we declare, and every
--- mod in the ecosystem declares them compatibly.
-local u32,sampling_ok=Nil,false
-pcall(function()
-    local ffi=require('ffi')
-    ffi.cdef[[
-        void *GetModuleHandleA(const char *name);
-        void *GetProcAddress(void *module, const char *name);
-    ]]
-    local k32=ffi.load('kernel32')
-    local hmod=k32.GetModuleHandleA('user32.dll')
-    if hmod==Nil then return end
-    local function bind(proto,name)
-        local ok,addr=pcall(function() return k32.GetProcAddress(hmod,name) end)
-        if not ok or addr==Nil then return Nil end
-        local okc,fn=pcall(ffi.cast,proto,addr)
-        if not okc then return Nil end
-        return fn
-    end
-    local api={
-        GetForegroundWindow=bind('void *(*)(void)','GetForegroundWindow'),
-        GetCursorPos=bind('int (*)(int32_t *)','GetCursorPos'),
-        ScreenToClient=bind('int (*)(void *, int32_t *)','ScreenToClient'),
-        GetClientRect=bind('int (*)(void *, int32_t *)','GetClientRect'),
-        GetAsyncKeyState=bind('int16_t (*)(int)','GetAsyncKeyState'),
-    }
-    if api.GetForegroundWindow==Nil or api.GetCursorPos==Nil
-       or api.ScreenToClient==Nil or api.GetClientRect==Nil
-       or api.GetAsyncKeyState==Nil then return end
-    u32=api
-    sampling_ok=true
-end)
-local s_pt= sampling_ok and require('ffi').new('int32_t[2]') or nil
-local s_rc= sampling_ok and require('ffi').new('int32_t[4]') or nil
-local HUD={failed=false,gui=nil,world=nil,sig=nil,checked=0}
-local function hud_detect_scanners()
-    local found={}
-    for _,g in ipairs(SCANNER_GLOBALS) do
-        if type(rawget(_G,g))~='nil' then
-            local short=g:match('ac8') and 'AC8' or g:match('NoLarge') and 'NOLP' or g
-            found[#found+1]=short
-        end
-    end
-    for extra in (cfg.scanners or ''):gmatch('[%w_]+') do
-        if type(rawget(_G,extra))~='nil' then found[#found+1]=extra end
-    end
-    return found
-end
-local HUD_FONT={}
-do
-    local defs={
-        ['0']='0110 1001 1001 1001 0110',['1']='0100 1100 0100 0100 1110',
-        ['2']='1110 0001 0110 1000 1111',['3']='1110 0001 0110 0001 1110',
-        ['4']='1001 1001 1111 0001 0001',['5']='1111 1000 1110 0001 1110',
-        ['6']='0111 1000 1110 1001 0110',['7']='1111 0001 0010 0100 0100',
-        ['8']='0110 1001 0110 1001 0110',['9']='0110 1001 0111 0001 1110',
-        A='0110 1001 1111 1001 1001',B='1110 1001 1110 1001 1110',
-        C='0111 1000 1000 1000 0111',D='1110 1001 1001 1001 1110',
-        E='1111 1000 1110 1000 1111',F='1111 1000 1110 1000 1000',
-        G='0111 1000 1011 1001 0111',H='1001 1001 1111 1001 1001',
-        I='1110 0100 0100 0100 1110',L='1000 1000 1000 1000 1111',
-        M='1001 1111 1111 1001 1001',N='1101 1011 1001 1001 1001',
-        O='0110 1001 1001 1001 0110',P='1110 1001 1110 1000 1000',
-        R='1110 1001 1110 1010 1001',S='0111 1000 0110 0001 1110',
-        T='1111 0100 0100 0100 0100',U='1001 1001 1001 1001 0110',
-        V='1001 1001 1001 0110 0110',W='1001 1001 1111 1111 1001',
-        X='1001 0110 0110 0110 1001',Y='1001 0110 0100 0100 0100',
-        ['-']='0000 0000 1111 0000 0000',[' ']='0000 0000 0000 0000 0000',
-        ['.']='0000 0000 0000 0000 0100',['|']='0100 0100 0100 0100 0100',
-        [':']='0000 0100 0000 0100 0000',['/']='0001 0010 0100 1000 0000',
-    }
-    -- CJK glyphs: 10 rows x 10 cols of '1'/'0', rendered taller than ASCII
-    HUD_FONT['节']={
-        '0000111100','0000111100','1111111111','0000111100','0000111100',
-        '0000110110','0000111111','0000111110','0000111100','0000111000'}
-    HUD_FONT['流']={
-        '0100000000','0010000011','0100111110','0001001001','0001001001',
-        '0111001010','0001001010','0001000110','0001000010','0000000000'}
-    for ch,def in pairs(defs) do
-        local rows={}
-        for row in def:gmatch('%d+') do rows[#rows+1]=row end
-        HUD_FONT[ch]=rows
-    end
-end
-local function hud_destroy()
-    if HUD.gui and HUD.world then
-        local sr=rawget(_G,'stingray')
-        if sr then pcall(sr.World.destroy_gui,HUD.world,HUD.gui) end
-    end
-    HUD.gui,HUD.sig=nil,nil
-end
-local function hud_world()
-    local sr=rawget(_G,'stingray')
-    if type(sr)~='table' or type(sr.Application)~='table' then return nil end
-    local okw,worlds=pcall(sr.Application.worlds)
-    if not okw or type(worlds)~='table' then return nil end
-    local okm,main=pcall(sr.Application.main_world)
-    for _,cand in ipairs(worlds) do
-        if not (okm and cand==main) then return cand end
-    end
-    return nil
-end
-local hud_zones={}   -- {x,y,w,h,action} in gui units, rebuilt each draw
-local function hud_show(text,extra)
-    local sr=rawget(_G,'stingray')
-    if type(sr)~='table' or type(sr.Gui)~='table' or type(sr.World)~='table' then return false,'stingray missing' end
-    local G=sr.Gui
-    if not HUD.gui then
-        local w=hud_world()
-        if not w then return false,'no world yet' end
-        local okg,gui=pcall(sr.World.create_screen_gui,w,'scale',1,1)
-        if not okg or gui==nil then return false,'create failed' end
-        HUD.gui,HUD.world=gui,w
-    end
-    local okr,rw,rh=pcall(G.resolution)
-    if not okr or type(rw)~='number' or rw<640 or type(rh)~='number' or rh<480 then return false,'resolution' end
-    local okv1,v3=pcall(sr.Vector3,0,0,0)
-    local okv2,v2=pcall(sr.Vector2,1,1)
-    local okc,col=pcall(sr.Color,255,255,215,60)
-    local okc2,bg=pcall(sr.Color,150,10,10,14)
-    if not (okv1 and okv2 and okc and okc2) then return false,'ctors' end
-    local scale=math.min(rw/1920,rh/1080)
-    local cell=math.max(2,math.floor(2.4*scale))
-    local wpx,hpx=8*scale,5*cell+6*scale
-    local i=1
-    while i<=#text do
-        local key=text:sub(i,i)
-        if key:byte()>=0x80 then key=text:sub(i,i+2) i=i+3 else i=i+1 end
-        local rows=HUD_FONT[key] or HUD_FONT[' ']
-        wpx=wpx+(#rows[1]+1)*cell
-        if #rows*cell+6*scale>hpx then hpx=#rows*cell+6*scale end
-    end
-    -- room for the two buttons: X (1ch) and OFF (3ch), each boxed
-    wpx=wpx+(1*5+4)*cell+4*scale+(3*5+4)*cell+4*scale
-    local x0=rw-wpx-10*scale
-    local y0=rh-hpx-8*scale
-    pcall(G.rect,HUD.gui,sr.Vector3(x0,y0,980),sr.Vector2(wpx,hpx),bg)
-    hud_zones={}
-    local px=x0+4*scale
-    local i=1
-    while i<=#text do
-        local key=text:sub(i,i)
-        if key:byte()>=0x80 then key=text:sub(i,i+2) i=i+3 else i=i+1 end
-        local rows=HUD_FONT[key] or HUD_FONT[' ']
-        local h,wd=#rows,#rows[1]
-        for r=1,h do
-            local row=rows[r]
-            for n=1,wd do
-                if row:sub(n,n)=='1' then
-                    pcall(G.rect,HUD.gui,sr.Vector3(px+(n-1)*cell,y0+3*scale+(h-r)*cell,984),sr.Vector2(cell,cell),col)
-                end
-            end
-        end
-        px=px+(wd+1)*cell
-    end
-    -- [X] dismiss once, [OFF] forever - gold-outlined boxes with gaps
-    local okc3,dim=pcall(sr.Color,235,168,178,186)
-    local okc4,gold=pcall(sr.Color,230,255,215,60)
-    local btns={{label='X',action='dismiss'},{label='OFF',action='never'}}
-    for bi,b in ipairs(btns) do
-        local bw=(#b.label*5+4)*cell
-        local bh=7*cell
-        local bx=px+4*scale
-        local by=y0+(hpx-bh)/2
-        -- backdrop, gold outline (all four sides), label centered
-        pcall(G.rect,HUD.gui,sr.Vector3(bx,by,982),sr.Vector2(bw,bh),bg)
-        pcall(G.rect,HUD.gui,sr.Vector3(bx,by,985),sr.Vector2(bw,cell),gold)
-        pcall(G.rect,HUD.gui,sr.Vector3(bx,by+bh-cell,985),sr.Vector2(bw,cell),gold)
-        pcall(G.rect,HUD.gui,sr.Vector3(bx,by,985),sr.Vector2(cell,bh),gold)
-        pcall(G.rect,HUD.gui,sr.Vector3(bx+bw-cell,by,985),sr.Vector2(cell,bh),gold)
-        local qx=bx+2*cell
-        local qy=by+(bh-5*cell)/2
-        for ci=1,#b.label do
-            local rows=HUD_FONT[b.label:sub(ci,ci)]
-            for r=1,#rows do
-                local row=rows[r]
-                for n=1,#row do
-                    if row:sub(n,n)=='1' then
-                        pcall(G.rect,HUD.gui,sr.Vector3(qx+(ci-1)*5*cell+(n-1)*cell,qy+(#rows-r)*cell,984),sr.Vector2(cell,cell),dim)
-                    end
-                end
-            end
-        end
-        hud_zones[#hud_zones+1]={x=bx,y=by,w=bw,h=bh,action=b.action}
-        px=px+bw+4*scale
-    end
-    -- widen the background to what we actually drew
-    pcall(G.rect,HUD.gui,sr.Vector3(x0,y0,979),sr.Vector2(px-x0+4*scale,hpx),bg)
-    M._hud_draw=string.format('x0=%.0f px=%.0f rw=%.0f zones=%d',x0,px,rw,#hud_zones)
-    return true
-end
-
-local hud_dismissed=false
-local hud_was_down=false
-local function hud_click_raw()
-    local sr=rawget(_G,'stingray')
-    if type(sr)~='table' then return nil end
-    local okr,rw,rh=pcall(sr.Gui.resolution)
-    if not okr or type(rw)~='number' then return nil end
-    local win=u32.GetForegroundWindow()
-    if win==nil then return nil end
-    if u32.GetCursorPos(s_pt)==0 then return nil end
-    if u32.ScreenToClient(win,s_pt)==0 then return nil end
-    if u32.GetClientRect(win,s_rc)==0 then return nil end
-    local w,h=s_rc[2]-s_rc[0],s_rc[3]-s_rc[1]
-    if not(w>0 and h>0) then return nil end
-    local gx,gy=s_pt[0]*rw/w,(h-s_pt[1])*rh/h
-    local ks=tonumber(u32.GetAsyncKeyState(0x01))
-    local down=ks~=nil and ks<0
-    local clicked=false
-    if down and not hud_was_down then
-        for _,z in ipairs(hud_zones) do
-            if gx>=z.x and gx<=z.x+z.w and gy>=z.y and gy<=z.y+z.h then
-                clicked=z.action
-            end
-        end
-    end
-    hud_was_down=down
-    return clicked
-end
--- any fault in the sampling path (an odd FFI declaration from another mod, a
--- window that vanished mid-call) must never escape into the update chain
-local function hud_click()
-    if not (sampling_ok and HUD.gui) then return nil end
-    local ok,res=pcall(hud_click_raw)
-    if not ok then return nil end
-    return res
-end
--- Language detection, Custom-Armor-Kit 2.0.3 method: a Chinese game keeps
--- Chinese text in its high string-pool arenas; one plain find per 256KB slice
--- for a known Chinese perk name decides zh. Absent after the sweep = en.
--- Runs as a low-priority background stepper (one slice every 30 frames,
--- starting after the init grace), so the first banner may briefly show in
--- English and flips to Chinese within seconds.
-local LANG={state='idle',regions=nil,ri=1,off=0,result=nil}
-local LANG_CACHE=HOME..'SmoothBoot/lang.txt'
-do
-    local ok,text=pcall(function()
-        local f=io.open(LANG_CACHE,'r') if not f then return nil end
-        local t=f:read('*l') f:close() return t
-    end)
-    if ok and (text=='zh' or text=='en') then
-        LANG.result=text LANG.state='done'
-    end
-end
-local LANG_NEEDLE='肾上腺素除颤器'
-local function lang_ffi()
-    local ok,ffi=pcall(require,'ffi')
-    if not ok then return nil end
-    local okc=pcall(function()
-        ffi.cdef[[
-            int ReadProcessMemory(void *process,const void *address,void *buffer,size_t size,size_t *read);
-            size_t VirtualQuery(const void *address,void *mbi,size_t len);
-            void *GetCurrentProcess(void);
-        ]]
-    end)
-    if not okc then return nil end
-    return ffi
-end
-local function lang_regions(ffi)
-    local k=ffi.load('kernel32')
-    local mbi=ffi.new('uint8_t[48]')
-    local list={}
-    local cursor=0x100000000          -- high arenas only (string pool lives here)
-    local limit=0x800000000000
-    local guard=0
-    while cursor<limit and guard<5000 do
-        guard=guard+1
-        local n=tonumber(k.VirtualQuery(ffi.cast('const void*',cursor),mbi,48))
-        if n==0 then break end
-        local base=tonumber(ffi.cast('uint64_t*',mbi)[0])
-        local size=tonumber(ffi.cast('uint64_t*',mbi)[3])
-        local prot=tonumber(ffi.cast('uint32_t*',mbi+36)[0])
-        if size==0 then break end
-        local readable=(prot==0x02 or prot==0x04 or prot==0x20 or prot==0x40)
-        local committed=(tonumber(ffi.cast('uint32_t*',mbi+32)[0])==0x1000)
-        if readable and committed and size>=65536 then
-            list[#list+1]={base=base,size=size}
-        end
-        cursor=base+size
-    end
-    return list
-end
-local lang_buf=nil
-local function lang_scan_step()
-    if LANG.state=='done' then return end
-    if not LANG.regions then
-        local ffi=lang_ffi()
-        if not ffi then LANG.state='done' LANG.result='en' return end
-        LANG.regions=lang_regions(ffi)
-        log('lang sweep: '..#(LANG.regions or {})..' high region(s) to check')
-        if not LANG.regions or #LANG.regions==0 then LANG.state='done' LANG.result='en' return end
-        LANG.ffi=ffi
-        lang_buf=ffi.new('uint8_t[8388608]')
-        LANG.proc=ffi.load('kernel32').GetCurrentProcess()
-    end
-    local r=LANG.regions[LANG.ri]
-    if not r then
-        LANG.state='done'
-        LANG.result=LANG.result or 'en'
-        log('lang: sweep finished - banner language locked to '..LANG.result:upper())
-        pcall(function()
-            local f=io.open(LANG_CACHE,'w')
-            if f then f:write(LANG.result) f:close() end
-        end)
-        return
-    end
-    local want=math.min(8388608,r.size-LANG.off)
-    if want<=0 then LANG.ri=LANG.ri+1 LANG.off=0 return end
-    local got=LANG.ffi.new('size_t[1]')
-    local ok=LANG.ffi.load('kernel32').ReadProcessMemory(LANG.proc,
-        LANG.ffi.cast('const void*',r.base+LANG.off),lang_buf,want,got)
-    LANG.off=LANG.off+want
-    if ok~=0 and tonumber(got[0])==want then
-        local text=LANG.ffi.string(lang_buf,want)
-        if text:find(LANG_NEEDLE,1,true) then
-            LANG.state='done'
-            LANG.result='zh'
-            HUD.sig=nil       -- force a banner redraw in the new language
-            log('lang: Chinese game text detected - banner in Chinese')
-            pcall(function()
-                local f=io.open(LANG_CACHE,'w')
-                if f then f:write('zh') f:close() end
-            end)
-        end
-    end
-end
-local function resolve_hud_lang()
-    local want=cfg.hud_lang or 'auto'
-    if want=='zh' or want=='en' then return want end
-    return LANG.result or 'en'
-end
-
-local function hud_tick(active,busy,avg_ms)
-    M._hud_k=(M._hud_k or 0)+1
-    if HUD.failed then return end
-    if cfg.hud==false then return end
-    local shown=active or busy
-    if not shown then
-        hud_dismissed=false
-        if HUD.gui then hud_destroy() end
-        return
-    end
-    -- button polling while visible
-    local click=hud_click()
-    if click=='dismiss' then
-        hud_dismissed=true
-        hud_destroy()
-        log('hud dismissed for this episode')
-        return
-    elseif click=='never' then
-        cfg.hud=false
-        hud_destroy()
-        pcall(function()
-            local f=io.open(CFG,'a')
-            if f then f:write('\nhud=off\n') f:close() end
-        end)
-        log('hud permanently disabled via banner button (hud=off written to config)')
-        return
-    end
-    if hud_dismissed then return end
-    local scanners=hud_detect_scanners()
-    local ms=avg_ms<1 and '<1' or tostring(math.floor(avg_ms+0.5))
-    local who=#scanners>0 and table.concat(scanners,' ') or 'CHAIN'
-    local zh=resolve_hud_lang()=='zh'
-    local txt
-    if active then
-        txt=zh and ('SB 节流 '..ms..'MS '..who) or ('SB THROTTLED '..ms..'MS '..who)
-    else
-        txt=zh and ('SB 链忙 '..ms..'MS 保护中') or ('SB BUSY '..ms..'MS PROTECTED')
-    end
-    if txt==HUD.sig and os.clock()-(HUD.built_at or 0)<20 then return end
-    hud_destroy()
-    HUD.built_at=os.clock()
-    local ok,why=hud_show(txt)
-    if ok then HUD.sig=txt
-    else
-        if why=='no world yet' then return end
-        HUD.failed=true
-        log('hud disabled: '..tostring(why))
-    end
-end
-
 wrapper=function(...)
     local nowf=os.clock()
     if nowf>last_call then
@@ -1439,6 +1079,7 @@ wrapper=function(...)
         if frames%600==0 then hb('alive frames='..frames) end
     end
     if frames==1 then
+        M.excluded_below=M.find_excluded_below()
         if cfg.snapshot then pcall(runtime_snapshot) end
         local hh=rawget(_G,'update')
         local who='?'
@@ -1534,23 +1175,6 @@ wrapper=function(...)
             log('too many re-heads; staying below the current one')
         end
     end
-    if LANG.state~='done' and os.clock()-installed_at>30 and frames%10==0
-       and (HUD.gui~=nil or frames%60==0) then
-        pcall(lang_scan_step)
-    end
-    if frames%60==0 then
-        local avg=stats.n>0 and stats.total/stats.n or 0
-        local eff2=cfg.busy_ms or 12
-        if cfg.busy_pct and cfg.busy_pct>0 and fi_n>=120 then
-            local fi_ms=fi_t/math.max(1,fi_n)*1000
-            local pct_ms=fi_ms*cfg.busy_pct/100
-            if pct_ms>eff2 then eff2=pct_ms end
-        end
-        local busy=avg>eff2
-        if skip>1 or busy or HUD.gui~=nil then
-            pcall(hud_tick, skip>1, busy, avg)
-        end
-    end
     local now0=os.clock()
     if cfg.diag and now0-(M._diag_t or 0)>=30 then
         M._diag_t=now0
@@ -1562,8 +1186,8 @@ wrapper=function(...)
         end
         pcall(function()
             local f=io.open(LOG,'a')
-            if f then f:write(os.date('!%H:%M:%S')..string.format(' diag frames=%d calls=%d head=%s hud_k=%s failed=%s\n',
-                frames,calls,who,tostring(M._hud_k),tostring(HUD.failed),tostring(M._hud_draw))) f:close() end
+            if f then f:write(os.date('!%H:%M:%S')..string.format(' diag frames=%d calls=%d head=%s\n',
+                frames,calls,who)) f:close() end
         end)
     end
     if os.clock()-last_cfg>10 then
@@ -1571,6 +1195,7 @@ wrapper=function(...)
         if not M.tools_ready and tool_attempts<6 then provision_tools() end
         cfg=conf()
         excludes=excluded_list(cfg.exclude or '')
+        M.excluded_below=M.find_excluded_below()
         pcall(M.frag_check)
         if not peer_active and type(rawget(_G,'MDL'))=='table' then
             peer_active=true
@@ -1593,7 +1218,7 @@ wrapper=function(...)
                     local cn=wh_chunk_of(cur)
                     if cn:find('gun_calibration',1,true) then
                         M._fc_found=true
-                        found[#found+1]='gun_calibration(chain)'
+                        M._fc_source=cn
                         log('frame-critical mod on chain (gun_calibration) - throttling suspended')
                         break
                     end
@@ -1601,7 +1226,8 @@ wrapper=function(...)
                 end
             end
         end
-        if M._fc_found then found[#found+1]='gun_calibration' end
+        if M._fc_found then found[#found+1]=M._fc_source or 'frame-critical mod' end
+        M.protected_sources=found
         local now_ui=#found>0
         if now_ui~=ui_present then
             ui_present=now_ui
@@ -1628,7 +1254,7 @@ wrapper=function(...)
     -- so scanners sit still while the engine rebuilds its tables. The chain
     -- itself keeps running - this is the freeze that does not black-screen.
     local bps=cfg.boot_pause_s or 10
-    if os.clock()-installed_at<bps then
+    if os.clock()-installed_at<bps and not (M.excluded_below and #M.excluded_below>0) then
         if frames%30==0 then pcall(ap_scan) end
     else
         ap_restore()
@@ -1650,6 +1276,10 @@ wrapper=function(...)
         if unpack then return unpack(r,1,#r) end
         return
     end
+    -- Manual exclusions inside our target require a full-speed fallback;
+    -- never skip or pause that callback along with the downstream chain.
+    local manual_protection=M.excluded_below and #M.excluded_below>0
+    if manual_protection then paused_until=0 end
     -- circuit breaker gate
     local now=os.clock()
     if now<paused_until then
@@ -1663,6 +1293,7 @@ wrapper=function(...)
     local cap=1
     local want_throttle=(cfg.throttle=='yes') or (cfg.throttle=='auto' and ui_present~=true)
     if peer_active and cfg.peer_suspend then want_throttle=false end
+    if manual_protection then want_throttle=false end
     if want_throttle and settled(cfg.grace_s) then cap=skip end
     if cap>1 and frames%math.floor(cap)~=0 then
         skipped=skipped+1
@@ -1705,7 +1336,7 @@ wrapper=function(...)
     end
     if cost>stats.max then stats.max=cost end
     -- breaker accounting (mission scene only; menus are already throttled)
-    if cost>(cfg.trip_ms or 50) and settled(cfg.grace_s) then
+    if cost>(cfg.trip_ms or 50) and settled(cfg.grace_s) and not manual_protection then
         trips=trips+1
         if trips>=(cfg.trip_n or 3) then
             paused_until=os.clock()+(cfg.pause_s or 5)

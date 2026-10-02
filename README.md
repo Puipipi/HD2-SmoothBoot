@@ -1,7 +1,27 @@
 # HD2 SmoothBoot
 
-开发候选：**3.0.12，已运行舰船和任务场景；120+ FPS 的持续对局验收尚未完成，不作为稳定版发布。**
-Development candidate: **3.0.12; ship and mission runtime checked. Sustained 120+ FPS gameplay acceptance remains pending; this is not a stable release.**
+开发候选：**3.0.21，移除兼容提示弹窗，并将反馈有问题的 LTE 头盔与披风模组加入默认排除名单。**
+Development candidate: **3.0.21 removes the compatibility popup and excludes LTE Helmet and Cape Passives by default. The reported third-party combination has not been validated locally.**
+
+评论明确说明 RatInPlat 的 Armor Transmog 正常；问题是同时使用 LTE Helmet and Cape
+Passives 时不能创建自定义头盔/披风变体，已有被动仍存在。因此本次只新增
+`lte/helmet_cape_passives`，没有新增 Armor Transmog 排除项。
+不能可靠自动判断第三方功能是否被破坏，按用户要求移除整个弹窗及其输入/绘制逻辑。
+没有启用新的自动分类或分别调度；用户仍可通过名单排除托管。
+
+旧配置首次升级会保留已有内容并合并 LTE 排除项；升级标记生成后，用户可以手动移除，
+后续启动不会反复加回。排除对象若在托管链内部，旧调度器保守地让整段链全速运行，
+避免被跳帧、启动暂停或熔断。这可能减少该链的优化收益，不代表各模组已分别调度。
+
+新增4项排除/无弹窗回归、8项FFI检查、6项运行工具检查通过，sb2/sb3/sb5及
+性能/defaults检查通过。实机验证范围和证据见项目交接文档；未安装评论中的完整组合，
+不能称已验证“创建变体”恢复，也不能称所有第三方功能兼容。
+
+当前直接导入管理器的安装包：`dist/HD2-SmoothBoot-3.0.21-candidate.zip`。
+日志收集器的 E 选项可合并精确模组标识到 `exclude=`；已有名单保留。
+此版不承诺任意第三方组合的兼容性或每帧0.05ms开销。
+
+以下是保留的前期性能修复与历史验证记录。
 
 3.0.12 保留看门狗在 writer gate 周围安装的计时代理，并让放行后的 writer
 经过同一个下游代理。3.0.3 也存在这个问题：维护会拆除代理，放行会绕过下游
@@ -22,7 +42,7 @@ Development candidate: **3.0.12; ship and mission runtime checked. Sustained 120
 3.0.11 修正接管新链时漏掉下游首帧的问题，并验证多次接管不会重复执行回调。
 相关十二项测试、sb2、sb5、LuaJIT/FFI 审计通过；模拟测试不能代替游戏完整功能验证。
 
-3.0.12 本地候选包在 `dist/HD2-SmoothBoot-3.0.12-candidate.zip`，未上传。
+历史3.0.12 本地候选包在 `dist/HD2-SmoothBoot-3.0.12-candidate.zip`，未上传。
 历史 3.0.3 可直接导入管理器的 ZIP 在本地 `dist/HD2-SmoothBoot-3.0.3-dev.zip`，线上在
 [测试 Release](https://github.com/YC426/HD2-SmoothBoot/releases/tag/v3.0.3-dev.20261002)。
 不要将 GitHub 自动生成的 Source code ZIP 当作模组安装包。
