@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.log
+*.zip
+*.dmp
+*.tmp
+outputs/*
+!outputs/7c30c505-701d-45d1-9c41-54244712db9a.png
+work/standalone/vendor/
