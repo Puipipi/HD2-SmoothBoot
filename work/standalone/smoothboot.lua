@@ -17,8 +17,8 @@
 --   * keeps 1.0 behaviour: boot window skip, adaptive skip, stats, config reload
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.10' then return old end
-local M={version='3.0.10',status='starting'}
+if old and old.version=='3.0.11' then return old end
+local M={version='3.0.11',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -792,6 +792,10 @@ local function provision_tools()
   The game creates Collect-Logs.bat next to this README on first run
   (folder: %LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\).
   / 首次运行游戏后，本 README 旁边会自动生成 Collect-Logs.bat。
+  This is the runtime config folder, not the mod manager import folder.
+  此处是运行配置目录，不是模组管理器的安装目录。
+  Open it by pasting the folder path above into File Explorer.
+  将上方目录粘贴到文件资源管理器地址栏即可打开。
   1. Close the game / 关闭游戏
   2. Double-click Collect-Logs.bat / 双击 Collect-Logs.bat
   3. Type C and press Enter / 输入 C 回车
@@ -815,6 +819,8 @@ local function provision_tools()
   writers=FRAG,...      writer mods held at boot / 开机扣留的写入器
   writer_release_s=10   seconds before first release / 首个放行延时
   writer_stagger_s=8    seconds between releases / 放行间隔
+  writer_min_stagger_s=8 minimum release interval / 最短放行间隔
+  snapshot=no          deep diagnostic snapshots (off by default) / 深度快照默认关闭
   writer_norelease=FRAG never released / 永不放行
     NOTE: the m103 FRV turret writer is held permanently BY DEFAULT - its
     delayed write crashed 3/3 test sessions. To re-enable it at your own
@@ -846,7 +852,7 @@ if not errorlevel 1 (
   pause
   exit /b 1
 )
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $base=Join-Path $env:LOCALAPPDATA 'CowboyBingus\Helldivers2'; $stage=$null; try { $mode=Read-Host 'Collect logs (C) / Exclude a mod (E)'; if ($mode -eq 'E') { $log=Join-Path $base 'Logs\SmoothBoot.log'; if (-not (Test-Path -LiteralPath $log)) { throw 'No SmoothBoot.log. Start the game once first.' }; $inv=Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object {$_ -match 'chain inventory'} | Select-Object -Last 1; if (-not $inv) { throw 'No chain inventory yet. Let initialization finish first.' }; $names=$inv -replace '^.*chain inventory[^:]*:',''; $mods=@($names -split ',\s*' | ForEach-Object {$_.Trim()} | Where-Object {$_ -match '^mods/[\w./-]+$' -and $_ -notmatch 'smoothboot|^mods/mdl/'} | Select-Object -Unique); if ($mods.Count -eq 0) { throw 'No manageable mods in the inventory.' }; for($i=0; $i -lt $mods.Count; $i++) { Write-Host (' {0,2}. {1}' -f ($i+1),$mods[$i]) }; $n=Read-Host 'Mod NUMBER (0 = cancel)'; $idx=0; if (-not [int]::TryParse($n,[ref]$idx) -or $idx -lt 0 -or $idx -gt $mods.Count) { throw 'Invalid mod number.' }; if ($idx -gt 0) { $frag=$mods[$idx-1] -replace '\.lua$',''; $cfg=Join-Path $base 'SmoothBoot\config.txt'; $cur=@(); if (Test-Path -LiteralPath $cfg) { $cur=@(Get-Content -LiteralPath $cfg -Encoding UTF8) }; $existing=@($cur | Where-Object {$_ -match '^\s*exclude\s*='} | Select-Object -Last 1); $values=@(); if($existing.Count) { $values=@(($existing[0] -replace '^\s*exclude\s*=\s*','') -split ',' | ForEach-Object {$_.Trim()} | Where-Object {$_}) }; $values=@(@($values)+@($frag) | Select-Object -Unique); $kept=@($cur | Where-Object {$_ -notmatch '^\s*exclude\s*='}); $updated=@($kept)+@('exclude='+($values -join ',')); [IO.File]::WriteAllLines($cfg,$updated,(New-Object Text.UTF8Encoding($false))); Write-Host ('DONE: exclude='+($values -join ',')); Write-Host 'To undo, remove only this mod from the exclude= list.'; }; } elseif ($mode -eq 'C') { if (-not (Test-Path -LiteralPath $base)) { throw 'No mod log directory. Start the game with SmoothBoot enabled first.' }; $desktop=[Environment]::GetFolderPath('Desktop'); if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { $desktop=Join-Path $base 'SmoothBoot' }; $zip=Join-Path $desktop ('SmoothBoot-logs-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+([guid]::NewGuid().ToString('N').Substring(0,6))+'.zip'); $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()); $stage=Join-Path $tempRoot ('SmoothBoot-collect-'+[guid]::NewGuid().ToString('N')); [void][IO.Directory]::CreateDirectory($stage); foreach($group in @('Logs','SmoothBoot')) { $from=Join-Path $base $group; $to=Join-Path $stage $group; [void][IO.Directory]::CreateDirectory($to); if (Test-Path -LiteralPath $from) { Get-ChildItem -LiteralPath $from -File | Where-Object {$_.Extension -in @('.log','.hb','.txt','.bat')} | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $to }; }; }; $crashPath=Join-Path $stage 'crashes.txt'; try { $crash=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000} -MaxEvents 120 -ErrorAction Stop | Where-Object {$_.Message -match 'helldivers'} | ForEach-Object { '{0} {1}' -f $_.TimeCreated,($_.Message -replace '\s+',' ') }); if (-not $crash.Count) {$crash=@('No matching crash records.')}; $crash | Set-Content -LiteralPath $crashPath -Encoding UTF8; } catch { ('Crash records unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath $crashPath -Encoding UTF8 }; $modsRoot=Join-Path $env:LOCALAPPDATA 'hd2arsenal\mods'; $rows=@(); if(Test-Path -LiteralPath $modsRoot) { $rows=@(Get-ChildItem -LiteralPath $modsRoot -Directory | ForEach-Object { $_.Name }) }; $rows | Set-Content -LiteralPath (Join-Path $stage 'modlist.txt') -Encoding UTF8; $db=Join-Path $env:LOCALAPPDATA 'hd2arsenal\hd2a_data.json'; if(Test-Path -LiteralPath $db) { try { $data=Get-Content -LiteralPath $db -Raw -Encoding UTF8 | ConvertFrom-Json; $data.modsList.default.mods | Select-Object label,enabled,deployed | Export-Csv -LiteralPath (Join-Path $stage 'mod-status.csv') -NoTypeInformation -Encoding UTF8; } catch { ('Mod status unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath (Join-Path $stage 'mod-status-error.txt') -Encoding UTF8 }; }; Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip; if(-not (Test-Path -LiteralPath $zip)) { throw 'Log ZIP was not created.' }; Write-Host ('Done: '+$zip); } else { throw 'Choose C or E.' }; } catch { Write-Host ('FAILED: '+$_.Exception.Message); exit 1 } finally { if($stage -and (Test-Path -LiteralPath $stage)) { $resolved=[IO.Path]::GetFullPath($stage); if($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved) -match '^SmoothBoot-collect-[0-9a-f]{32}$') { [IO.Directory]::Delete($resolved,$true) } } }"
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $base=Join-Path $env:LOCALAPPDATA 'CowboyBingus\Helldivers2'; $stage=$null; try { $mode=Read-Host 'Collect logs (C) / Exclude a mod (E)'; if ($mode -eq 'E') { $log=Join-Path $base 'Logs\SmoothBoot.log'; if (-not (Test-Path -LiteralPath $log)) { throw 'No SmoothBoot.log. Start the game once first.' }; $inv=Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object {$_ -match 'chain inventory'} | Select-Object -Last 1; if (-not $inv) { throw 'No chain inventory yet. Let initialization finish first.' }; $names=$inv -replace '^.*chain inventory[^:]*:',''; $mods=@($names -split ',\s*' | ForEach-Object {$_.Trim()} | Where-Object {$_ -match '^mods/[\w./-]+$' -and $_ -notmatch 'smoothboot|^mods/mdl/'} | Select-Object -Unique); if ($mods.Count -eq 0) { throw 'No manageable mods in the inventory.' }; for($i=0; $i -lt $mods.Count; $i++) { Write-Host (' {0,2}. {1}' -f ($i+1),$mods[$i]) }; $n=Read-Host 'Mod NUMBER (0 = cancel)'; $idx=0; if (-not [int]::TryParse($n,[ref]$idx) -or $idx -lt 0 -or $idx -gt $mods.Count) { throw 'Invalid mod number.' }; if ($idx -gt 0) { $frag=$mods[$idx-1] -replace '\.lua$',''; $cfg=Join-Path $base 'SmoothBoot\config.txt'; $cur=@(); if (Test-Path -LiteralPath $cfg) { $cur=@(Get-Content -LiteralPath $cfg -Encoding UTF8) }; $existing=@($cur | Where-Object {$_ -match '^\s*exclude\s*='} | Select-Object -Last 1); $values=@(); if($existing.Count) { $values=@(($existing[0] -replace '^\s*exclude\s*=\s*','') -split ',' | ForEach-Object {$_.Trim()} | Where-Object {$_}) }; $values=@(@($values)+@($frag) | Select-Object -Unique); $kept=@($cur | Where-Object {$_ -notmatch '^\s*exclude\s*='}); $updated=@($kept)+@('exclude='+($values -join ',')); [IO.File]::WriteAllLines($cfg,$updated,(New-Object Text.UTF8Encoding($false))); Write-Host ('DONE: exclude='+($values -join ',')); Write-Host 'To undo, remove only this mod from the exclude= list.'; }; } elseif ($mode -eq 'C') { if (-not (Test-Path -LiteralPath $base)) { throw 'No mod log directory. Start the game with SmoothBoot enabled first.' }; $desktop=[Environment]::GetFolderPath('Desktop'); if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { $desktop=Join-Path $base 'SmoothBoot' }; $zip=Join-Path $desktop ('SmoothBoot-logs-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+([guid]::NewGuid().ToString('N').Substring(0,6))+'.zip'); $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()); $stage=Join-Path $tempRoot ('SmoothBoot-collect-'+[guid]::NewGuid().ToString('N')); [void][IO.Directory]::CreateDirectory($stage); foreach($group in @('Logs','SmoothBoot')) { $from=Join-Path $base $group; $to=Join-Path $stage $group; [void][IO.Directory]::CreateDirectory($to); if (Test-Path -LiteralPath $from) { Get-ChildItem -LiteralPath $from -File | Where-Object {$_.Extension -in @('.log','.hb','.txt','.bat')} | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $to }; }; }; $diag=Join-Path $stage 'Diagnostics'; [void][IO.Directory]::CreateDirectory($diag); $extra=@((Join-Path $env:APPDATA 'Arrowhead\Helldivers2\mod_lag_finder.log'),(Join-Path $env:LOCALAPPDATA 'MDL\Helldivers2\MDL.cfg'),(Join-Path $env:LOCALAPPDATA 'MDL\Helldivers2\MDL.log')); foreach($file in $extra) { if(Test-Path -LiteralPath $file -PathType Leaf) { Copy-Item -LiteralPath $file -Destination $diag } }; $crashPath=Join-Path $stage 'crashes.txt'; try { $crash=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000} -MaxEvents 120 -ErrorAction Stop | Where-Object {$_.Message -match 'helldivers'} | ForEach-Object { '{0} {1}' -f $_.TimeCreated,($_.Message -replace '\s+',' ') }); if (-not $crash.Count) {$crash=@('No matching crash records.')}; $crash | Set-Content -LiteralPath $crashPath -Encoding UTF8; } catch { ('Crash records unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath $crashPath -Encoding UTF8 }; $modsRoot=Join-Path $env:LOCALAPPDATA 'hd2arsenal\mods'; $rows=@(); if(Test-Path -LiteralPath $modsRoot) { $rows=@(Get-ChildItem -LiteralPath $modsRoot -Directory | ForEach-Object { $_.Name }) }; $rows | Set-Content -LiteralPath (Join-Path $stage 'modlist.txt') -Encoding UTF8; $db=Join-Path $env:LOCALAPPDATA 'hd2arsenal\hd2a_data.json'; if(Test-Path -LiteralPath $db) { try { $data=Get-Content -LiteralPath $db -Raw -Encoding UTF8 | ConvertFrom-Json; $data.modsList.default.mods | Select-Object label,enabled,deployed | Export-Csv -LiteralPath (Join-Path $stage 'mod-status.csv') -NoTypeInformation -Encoding UTF8; } catch { ('Mod status unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath (Join-Path $stage 'mod-status-error.txt') -Encoding UTF8 }; }; Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip; if(-not (Test-Path -LiteralPath $zip)) { throw 'Log ZIP was not created.' }; Write-Host ('Done: '+$zip); } else { throw 'Choose C or E.' }; } catch { Write-Host ('FAILED: '+$_.Exception.Message); exit 1 } finally { if($stage -and (Test-Path -LiteralPath $stage)) { $resolved=[IO.Path]::GetFullPath($stage); if($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved) -match '^SmoothBoot-collect-[0-9a-f]{32}$') { [IO.Directory]::Delete($resolved,$true) } } }"
 set "collector_result=%errorlevel%"
 pause
 exit /b %collector_result%
@@ -1438,6 +1444,7 @@ wrapper=function(...)
         log('engine pins _G.update; releasing adopted head (deploy-order mode)')
         head_above=nil
     end
+    local transition_target
     local head=rawget(_G,'update')
     if head~=wrapper and head==head_above then
         -- The adopted function has moved above us and is already executing
@@ -1488,6 +1495,7 @@ wrapper=function(...)
                 idx=idx+1
             end
             if slot then
+                transition_target=head_above or (WH.entry or base_prev)
                 if head_above then debug.setupvalue(head,slot,head_above) end
                 adopts=adopts+1
                 adopted_once[who]=true
@@ -1495,13 +1503,9 @@ wrapper=function(...)
                 gov_mark=frames
                 rawset(_G,'update',wrapper)
                 log('adopted chain head back from '..who..' (governor active again)')
-                -- 3.0.9: back to the 3.0.3 semantics. 3.0.4 let this frame fall
-                -- through and run the below-chain too, which ran the whole chain
-                -- twice on every adoption: held mods advanced twice per frame
-                -- (CorpseCleanup's attempt kept climbing) and the extra work
-                -- compounds, which is the FPS slide 3.0.3 never showed.
-                skipped=skipped+1
-                return -- transition frame: this call already went through the old head
+                -- The incoming head is already executing above us; call only
+                -- its original downstream on this frame. Returning here drops
+                -- that update; calling the new head duplicates its own callback.
             else
                 if not announced['<noslice:'..who..'>'] then
                     announced['<noslice:'..who..'>']=true
@@ -1613,7 +1617,7 @@ wrapper=function(...)
         ap_restore()
     end
 
-    local target=head_above or (WH.entry or base_prev)
+    local target=transition_target or head_above or (WH.entry or base_prev)
     if not target then return end
     if not cfg.enabled then
         inside=true

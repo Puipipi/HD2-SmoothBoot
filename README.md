@@ -1,9 +1,19 @@
 # HD2 SmoothBoot
 
-开发源码快照：**3.0.3，后续优化与完整实际游戏验收尚未完成。**
-Development snapshot: **3.0.3; pending optimization and full in-game acceptance.**
+开发候选：**3.0.11，已运行舰船和任务场景，完整玩法验收及偶发掉帧定位尚未完成。**
+Development candidate: **3.0.11; ship and mission runtime checked, full gameplay acceptance and intermittent hitch diagnosis pending.**
 
-可直接导入管理器的 ZIP 在本地 `dist/HD2-SmoothBoot-3.0.3-dev.zip`，线上在
+运行游戏后，日志收集器自动生成在
+`%LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\Collect-Logs.bat`。
+这是运行配置目录，不是管理器安装目录。关闭游戏后双击，输入 C，日志 ZIP 会出现在桌面。
+3.0.11 补收看门狗日志及 MDL 配置；安装包仍不包含独立 BAT 文件。
+
+3.0.10 的深度快照默认关闭修复保持有效（只有 `snapshot=yes` 才开启）。
+3.0.11 修正接管新链时漏掉下游首帧的问题，并验证多次接管不会重复执行回调。
+相关十二项测试、sb2、sb5、LuaJIT/FFI 审计通过；模拟测试不能代替游戏完整功能验证。
+
+3.0.11 本地候选包在 `dist/HD2-SmoothBoot-3.0.11-candidate.zip`，未上传。
+历史 3.0.3 可直接导入管理器的 ZIP 在本地 `dist/HD2-SmoothBoot-3.0.3-dev.zip`，线上在
 [测试 Release](https://github.com/YC426/HD2-SmoothBoot/releases/tag/v3.0.3-dev.20261002)。
 不要将 GitHub 自动生成的 Source code ZIP 当作模组安装包。
 

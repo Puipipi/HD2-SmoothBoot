@@ -321,25 +321,26 @@ def main():
     fails += report("scenario 3: entry bypass",
                     parse(str(rt.execute(g["H"]))))
 
-    # 4: timed staggered release (two phases with a wall-clock sleep)
+    # 4: deterministic staggered release on a calm 60 Hz engine clock.
     fresh("SB2184", "enabled=yes\nboot_skip=0\nwriter_release_s=0.5\nwriter_stagger_s=0.05\n")
     rt4 = lupa.lua51.LuaRuntime()
     g4 = rt4.globals()
+    clock4 = [0.0]
+    g4.os.clock = lambda: clock4[0]
     g4["src"] = sandboxed("SB2184")
     phase1 = HARNESS4.split("local WG=REG['mods/codex/gp20_ultimatum_ammo']")[0]
     g4["P1"] = phase1 + "\n_G.__st={gp=REG['mods/codex/gp20_ultimatum_ammo'],p33=REG['mods/codex/p33_missile_pistol_ammo']}\nGAMEN=0\nlocal __ou=update\n"
     rt4.execute("loadstring(P1)()")
     # make the game counter globally visible
     rt4.execute("local f=debug.getupvalue or nil return true")
-    time.sleep(1.6)
-    # P2: drive 120 frames in bursts with real sleeps so the 0.05s stagger
-    # deadline can actually elapse between releases
+    # Cover both deadlines without depending on the Lua runtime's os.clock
+    # interpretation of Python sleeps or the wall-clock scheduler.
     TICK = "if _G.update then _G.update(1/60) end return _G.update~=nil"
     alive = True
     for burst in range(4):
         for _ in range(30):
+            clock4[0] += 1/60
             alive = alive and bool(rt4.execute(TICK))
-        time.sleep(0.04)
     g4["P2"] = r'''
 local WG=__st.gp
 local W33=__st.p33
@@ -349,7 +350,7 @@ return WG.ticks,W33.ticks,tostring(WG.wrote),tostring(W33.wrote),type(_G.update)
     print("== scenario 4: timed staggered release ==")
     for name, ok in [
         ("chain alive through releases", alive and str(updtype) == "function"),
-        ("gp20 released & resumed (ticks>=119)", int(t1) >= 119),
+        ("gp20 released & resumed (ticks>=80)", int(t1) >= 80),
         ("gp20 late write fired", str(w1) == "True" or str(w1) == "true"),
         ("p33 released later & wrote", str(w2) == "True" or str(w2) == "true")]:
         print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))

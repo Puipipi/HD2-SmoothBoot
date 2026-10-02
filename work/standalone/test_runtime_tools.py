@@ -29,13 +29,20 @@ class RuntimeTools(unittest.TestCase):
             folder=root/'CowboyBingus/Helldivers2/SmoothBoot'
             log=root/'CowboyBingus/Helldivers2/Logs/fixture.log'
             log.write_text('fixture-runtime-evidence\n',encoding='utf-8')
+            roaming=root/'roaming'
+            watchdog=roaming/'Arrowhead/Helldivers2/mod_lag_finder.log'
+            watchdog.parent.mkdir(parents=True)
+            watchdog.write_text('fixture-hitch-evidence\n',encoding='utf-8')
+            mdl=root/'MDL/Helldivers2'
+            mdl.mkdir(parents=True)
+            (mdl/'MDL.cfg').write_text('enabled=yes\n',encoding='utf-8')
             temporary=root/'temp'
             temporary.mkdir()
             for name in ('crashes.txt','modlist.txt'):
                 (temporary/name).write_text('user-file-preserve',encoding='utf-8')
             command=re.search(r'powershell -NoProfile -Command "(.*)"',(folder/'Collect-Logs.bat').read_text(encoding='utf-8')).group(1)
             setup="function Read-Host {return 'C'}; function Get-WinEvent {return @()}; "
-            result=subprocess.run(['powershell.exe','-NoProfile','-Command',setup+command],env=dict(os.environ,LOCALAPPDATA=str(root),TEMP=str(temporary),TMP=str(temporary)),capture_output=True,text=True)
+            result=subprocess.run(['powershell.exe','-NoProfile','-Command',setup+command],env=dict(os.environ,LOCALAPPDATA=str(root),APPDATA=str(roaming),TEMP=str(temporary),TMP=str(temporary)),capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             output=re.search(r'Done: (.+)',result.stdout)
             self.assertIsNotNone(output,result.stdout)
@@ -49,6 +56,10 @@ class RuntimeTools(unittest.TestCase):
                 self.assertEqual(packed.read(names['Logs/fixture.log']),log.read_bytes())
                 self.assertIn('crashes.txt',names)
                 self.assertIn('SmoothBoot/config.txt',names)
+                self.assertIn('Diagnostics/mod_lag_finder.log',names,'watchdog evidence missing from support ZIP')
+                self.assertIn('Diagnostics/MDL.cfg',names)
+                self.assertEqual(packed.read(names['Diagnostics/mod_lag_finder.log']),watchdog.read_bytes())
+                self.assertEqual(packed.read(names['Diagnostics/MDL.cfg']),(mdl/'MDL.cfg').read_bytes())
             for name in ('crashes.txt','modlist.txt'):
                 self.assertEqual((temporary/name).read_text(encoding='utf-8'),'user-file-preserve')
             self.assertFalse(list(temporary.glob('SmoothBoot-collect-*')),'staging directory leaked')

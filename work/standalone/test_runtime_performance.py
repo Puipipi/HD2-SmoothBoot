@@ -7,12 +7,54 @@ import lupa.luajit21 as luajit
 SOURCE=pathlib.Path(__file__).with_name('smoothboot.lua').read_text(encoding='utf-8')
 
 class RuntimePerformance(unittest.TestCase):
+    def test_diag_alone_does_not_enable_deep_snapshots(self):
+        with tempfile.TemporaryDirectory(prefix='sb-snapshot-off-') as tmp:
+            home=pathlib.Path(tmp)/'CowboyBingus/Helldivers2'
+            (home/'SmoothBoot').mkdir(parents=True)
+            (home/'Logs').mkdir()
+            (home/'SmoothBoot/config.txt').write_text('diag=yes\nthrottle=no\nboot_pause_s=0\nhud=off\nwriters=\n',encoding='utf-8')
+            rt=luajit.LuaRuntime()
+            rt.globals().os.getenv=lambda key: tmp if key=='LOCALAPPDATA' else None
+            rt.execute("CowboyBingusModLoader={}; HD2VehicleCooldown={status='complete'}; update=function() end")
+            rt.execute(SOURCE)
+            rt.execute('for i=1,3600 do update(0.016) end')
+            log=(home/'Logs/SmoothBoot.log').read_text(encoding='utf-8')
+            self.assertIn('stats frames=3600',log)
+            self.assertNotIn('runtime state ',log)
+            self.assertNotIn('runtime C4 ',log)
+
+    def test_multiple_adoptions_preserve_each_callback_once_per_frame(self):
+        with tempfile.TemporaryDirectory(prefix='sb-adopt-') as tmp:
+            home=pathlib.Path(tmp)/'CowboyBingus/Helldivers2'
+            (home/'SmoothBoot').mkdir(parents=True)
+            (home/'Logs').mkdir()
+            (home/'SmoothBoot/config.txt').write_text('throttle=no\nboot_pause_s=0\nhud=off\nwriters=\nwriter_release_s=0\n',encoding='utf-8')
+            rt=luajit.LuaRuntime()
+            rt.globals().os.getenv=lambda key: tmp if key=='LOCALAPPDATA' else None
+            rt.execute('CowboyBingusModLoader={}; base_calls=0; ticks={}; update=function() base_calls=base_calls+1; return 123 end')
+            rt.execute(SOURCE)
+            rt.execute('''
+                bad_returns=0
+                for layer=1,3 do
+                    ticks[layer]=0
+                    update=assert(loadstring([[local previous,layer=...;
+                        return function(...) ticks[layer]=ticks[layer]+1; return previous(...) end]],
+                        '-- HD2-Addon: mods/test/layer'..layer))(update,layer)
+                    for frame=1,20 do
+                        if update(0.016)~=123 then bad_returns=bad_returns+1 end
+                    end
+                end
+            ''')
+            self.assertEqual(rt.globals().bad_returns,0,'transition lost return value')
+            self.assertEqual(rt.globals().base_calls,60)
+            self.assertEqual([rt.globals().ticks[i] for i in (1,2,3)],[60,40,20])
+
     def test_c4_observer_reaches_tick_under_watchdog_metadata(self):
         with tempfile.TemporaryDirectory(prefix='sb-c4-graph-') as tmp:
             home=pathlib.Path(tmp)/'CowboyBingus/Helldivers2'
             (home/'SmoothBoot').mkdir(parents=True)
             (home/'Logs').mkdir()
-            (home/'SmoothBoot/config.txt').write_text('diag=yes\nthrottle=no\nboot_pause_s=0\nhud=off\nwriters=\n',encoding='utf-8')
+            (home/'SmoothBoot/config.txt').write_text('diag=yes\nsnapshot=yes\nthrottle=no\nboot_pause_s=0\nhud=off\nwriters=\n',encoding='utf-8')
             rt=luajit.LuaRuntime()
             rt.globals().os.getenv=lambda key: tmp if key=='LOCALAPPDATA' else None
             rt.execute('''
@@ -49,7 +91,7 @@ class RuntimePerformance(unittest.TestCase):
             home=pathlib.Path(tmp)/'CowboyBingus/Helldivers2'
             (home/'SmoothBoot').mkdir(parents=True)
             (home/'Logs').mkdir()
-            (home/'SmoothBoot/config.txt').write_text('diag=yes\nthrottle=no\nboot_pause_s=0\nhud=off\nwriters=\n',encoding='utf-8')
+            (home/'SmoothBoot/config.txt').write_text('diag=yes\nsnapshot=yes\nthrottle=no\nboot_pause_s=0\nhud=off\nwriters=\n',encoding='utf-8')
             rt=luajit.LuaRuntime()
             rt.globals().os.getenv=lambda key: tmp if key=='LOCALAPPDATA' else None
             rt.execute('''
