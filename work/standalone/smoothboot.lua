@@ -113,8 +113,8 @@ local function conf()
                 w:write('# chain for writer_release_s seconds (their concurrent writes are what\n')
                 w:write('# crashes the game at 0x66d26c), then released one per stagger\n')
                 w:write('# interval while the engine is calm - every mod still takes effect\n')
-                w:write('writer_release_s=45\n')
-                w:write('writer_stagger_s=45\n')
+                w:write('writer_release_s='..defaults.writer_release_s..'\n')
+                w:write('writer_stagger_s='..defaults.writer_stagger_s..'\n')
                 w:write('# comma separated chunk fragments of writer mods to hold\n')
                 w:write('writers=p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing\n')
                 w:write('busy_ms=12\n')
@@ -771,8 +771,8 @@ local function provision_tools()
   enabled=yes/no        master switch / 总开关
   exclude=FRAG,...      never manage these mods / 排除托管
   writers=FRAG,...      writer mods held at boot / 开机扣留的写入器
-  writer_release_s=45   seconds before first release / 首个放行延时
-  writer_stagger_s=45   seconds between releases / 放行间隔
+  writer_release_s=10   seconds before first release / 首个放行延时
+  writer_stagger_s=8    seconds between releases / 放行间隔
   writer_norelease=FRAG never released / 永不放行
     NOTE: the m103 FRV turret writer is held permanently BY DEFAULT - its
     delayed write crashed 3/3 test sessions. To re-enable it at your own
