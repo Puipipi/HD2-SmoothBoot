@@ -188,3 +188,16 @@ Independent owned-memory tests and the game's Lua library checks pass; this
 candidate has not yet been validated in a running mission. No C4 files or C4
 configuration files are modified. Existing input/context candidates retain their
 own settings and defaults.
+# 3.0.29 diagnostic candidate
+
+Adds `c4_cpu_profile=yes/no` (default `no`) for a single 45-second Lua VM stack
+sample. Reports sampled VM states (including garbage collection) and bounded
+stack counts to the local Smooth log. It samples all Lua VM work, so the report
+must be read by stack rather than assigning everything to C4. Diagnostic FPS is
+not acceptance FPS. Automatic expiry and option/global disable stop sampling;
+turn the option off before requesting another run. C4 actions and the existing
+optimizations remain unchanged.
+
+CPU sampler controls and real samples were checked in an independent state using
+the game's Lua library. Mission data is still needed. No third-party mod files
+or configuration files are modified.

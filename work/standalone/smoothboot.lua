@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.28' then return old end
+if old and old.version=='3.0.29' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -37,7 +37,10 @@ end
 if old and type(old.c4_native_batch)=='table' and type(old.c4_native_batch.restore)=='function' then
     pcall(old.c4_native_batch.restore)
 end
-local M={version='3.0.28',status='starting'}
+if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
+    pcall(old.c4_cpu_profile.stop,'module_reload')
+end
+local M={version='3.0.29',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -104,7 +107,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,c4_native_batch=false,ui_mods='',scanners='',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,c4_native_batch=false,c4_cpu_profile=false,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -139,7 +142,7 @@ local function conf()
                 w:write('throttle=auto\nprofile=yes\n')
                 w:write('# candidate: reuse C4 native read buffers, never cache memory or skip input\n')
                 w:write('c4_read_pool=yes\n')
-                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\nc4_native_batch=no\n')
+                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\nc4_native_batch=no\nc4_cpu_profile=no\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -228,6 +231,8 @@ local function conf()
         if v then defaults.c4_context_batch=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*c4_native_batch%s*=%s*(%a+)%s*$')
         if v then defaults.c4_native_batch=(v=='yes' or v=='true' or v=='on') end
+        v=line:match('^%s*c4_cpu_profile%s*=%s*(%a+)%s*$')
+        if v then defaults.c4_cpu_profile=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
                              'writer_release_s','writer_stagger_s',
@@ -1317,6 +1322,69 @@ function C4Pool.discover(roots)
 end
 -- END C4 READ POOL
 
+-- BEGIN C4 CPU PROFILE
+-- Explicit diagnosis only. CPU stacks are sampled across this Lua VM, not just
+-- ReadProcessMemory calls. No game inputs, native writes, or foreign config edits.
+local C4CPU={running=false,completed=false,samples=0,errors=0,unique=0}
+M.c4_cpu_profile=C4CPU
+function C4CPU.stop(reason)
+    if not C4CPU.running then return end
+    C4CPU.running=false
+    local ok,err=pcall(C4CPU.backend.stop)
+    if not ok then log('[C4-CPU] stop failed: '..tostring(err))end
+    local states={}
+    for kind,count in pairs(C4CPU.states)do states[#states+1]=kind..'='..count end
+    table.sort(states)
+    log('[C4-CPU] stopped reason='..tostring(reason)..' samples='..C4CPU.samples..
+        ' errors='..C4CPU.errors..' overflow='..C4CPU.overflow..' states='..table.concat(states,','))
+    local rows={}
+    for stack,count in pairs(C4CPU.stacks)do rows[#rows+1]={stack=stack,count=count}end
+    table.sort(rows,function(a,b)return a.count>b.count end)
+    for i=1,math.min(20,#rows)do
+        log('[C4-CPU] '..rows[i].count..'x '..rows[i].stack)
+    end
+end
+function C4CPU.poll(now)
+    local wanted=cfg.enabled and cfg.c4_cpu_profile
+    if not wanted then
+        C4CPU.stop('config_disabled');C4CPU.completed=false;return
+    end
+    if C4CPU.running then
+        if now>=C4CPU.deadline then C4CPU.stop('45s_deadline')end
+        return
+    end
+    if C4CPU.completed then return end
+    C4CPU.completed=true
+    local ok,profile=pcall(require,'jit.profile')
+    if not ok or type(profile)~='table' or type(profile.start)~='function' or
+       type(profile.stop)~='function' or type(profile.dumpstack)~='function' then
+        log('[C4-CPU] unavailable; no sampler started');return
+    end
+    C4CPU.backend=profile;C4CPU.samples=0;C4CPU.errors=0;C4CPU.unique=0
+    C4CPU.stacks={};C4CPU.states={};C4CPU.overflow=0;C4CPU.deadline=now+45
+    local function sample(thread,n,state)
+        if not C4CPU.running then return end
+        C4CPU.samples=C4CPU.samples+n
+        C4CPU.states[state]=(C4CPU.states[state] or 0)+n
+        local good,stack=pcall(profile.dumpstack,thread,'pl;',12)
+        if not good or type(stack)~='string' then C4CPU.errors=C4CPU.errors+1;return end
+        stack=state..' '..stack:gsub('[\r\n]',' '):sub(1,2400)
+        local count=C4CPU.stacks[stack]
+        if count then C4CPU.stacks[stack]=count+n
+        elseif C4CPU.unique<512 then
+            C4CPU.unique=C4CPU.unique+1;C4CPU.stacks[stack]=n
+        else C4CPU.overflow=C4CPU.overflow+n end
+    end
+    C4CPU.running=true
+    local started,why=pcall(profile.start,'li5',sample)
+    if not started then
+        C4CPU.running=false;pcall(profile.stop)
+        log('[C4-CPU] start failed: '..tostring(why));return
+    end
+    log('[C4-CPU] started interval=5ms duration=45s; diagnostic FPS is not acceptance FPS')
+end
+-- END C4 CPU PROFILE
+
 -- ===== writer hold: splice FFI writer mods off the chain ==============
 -- The 0x66d26c crash family: dsh/codex FFI mods write into engine tables
 -- exactly while the engine rebuilds them (boot + first mission entry).
@@ -1830,6 +1898,8 @@ local function provision_tools()
     / 上下文校验分块测试，默认no。每项仍校验新数据；大读取失败回退。
     Native actions, input policy and validation limits are preserved.
     / 保留原生动作、输入策略及校验限制。切换可热生效，不是稳定版保证。
+  c4_cpu_profile=yes/no    45-second CPU diagnosis only (default no)
+    / CPU短时诊断，默认关闭，45秒自动停止。诊断期间帧率不作为验收结果。
   exclude=FRAG,...      never manage these mods / 排除托管
   writers=FRAG,...      writer mods held at boot / 开机扣留的写入器
   writer_release_s=10   seconds before first release / 首个放行延时
@@ -2006,6 +2076,7 @@ log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d',
 
 wrapper=function(...)
     local nowf=os.clock()
+    if cfg.c4_cpu_profile or C4CPU.running or C4CPU.completed then C4CPU.poll(nowf)end
     if nowf>last_call then
         fi_t=fi_t+(nowf-last_call); fi_n=fi_n+1
         if fi_n>=600 then fi_t=fi_t/2; fi_n=fi_n/2 end
