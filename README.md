@@ -1,5 +1,33 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.35**：参考 Consistent Vaulting 的轻量快照，在已核对的
+C4 1.11 界面检查中只读取需要的地图和武器菜单标志。每次仍重新检查任务、
+本地角色、登记表、背包、所持 C4 身份和所有已收集保护字段；原生界面栈检查
+不变，其他读取与投掷、引爆回调保持完整。沿用默认关闭的 `c4_context_batch=yes`，
+关闭、排除或未知源码时恢复/保留原逻辑。不修改其他模组文件或配置。
+
+独立游戏 Lua 库的 128 槽合成夹具中，一次界面检查的原生读取从189降到53；
+完整模块120次前后回调、焦点和界面阻挡、身份变化、读取失败及重载恢复检查通过。
+**这是局部模拟结果，不是整套 C4 性能或实机帧率收益。尚待游戏功能与FPS验收。**
+安装候选版前需要用户退出游戏；游戏操作由用户完成。
+
+Development candidate **3.0.35** applies Consistent Vaulting's light-snapshot
+approach to the verified C4 1.11 flags-only UI consumer. Every call still checks
+fresh mission/player/avatar/registry/inventory/selected-C4 identity and validates
+all collected guards. The complete native UI stack, other context consumers,
+throw/detonate callbacks and controls stay intact. Uses the existing default-off
+`c4_context_batch=yes` option; opt-out, unknown variants and changed dependencies
+restore or retain the original logic. No third-party installed files/configs change.
+
+In an independent game-Lua-library replay with a synthetic 128-slot template
+table, one UI check fell from189 to53 native reads. Full-module120 before/after
+callbacks, focus/UI gating, identity mutations, read failures and reload restore
+passed. **These are local simulation results, not full-C4 or in-game FPS gains.
+Live functional/performance acceptance is pending.** Candidate deployment requires
+the user to close the game; the user performs game operations.
+
+以下保留历史候选记录。
+
 当前开发候选 **3.0.34**：复用 C4 状态校验中相同地址和长度的读取计划，
 减少反复排序和临时分配。缓存最多8种布局，缓存只保存地址、长度和分组，
 每次仍读取最新原生字节；完整比较所有字段，保持预算、失败回退、返回快照

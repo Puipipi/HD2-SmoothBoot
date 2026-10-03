@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.34' then return old end
+if old and old.version=='3.0.35' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -33,6 +33,9 @@ if old and type(old.c4_input_batch)=='table' and type(old.c4_input_batch.restore
 end
 if old and type(old.c4_context_batch)=='table' and type(old.c4_context_batch.restore)=='function' then
     pcall(old.c4_context_batch.restore)
+end
+if old and type(old.c4_ui_scope)=='table' and type(old.c4_ui_scope.restore)=='function' then
+    pcall(old.c4_ui_scope.restore)
 end
 if old and type(old.c4_idle_batch)=='table' and type(old.c4_idle_batch.restore)=='function' then
     pcall(old.c4_idle_batch.restore)
@@ -43,7 +46,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.34',status='starting'}
+local M={version='3.0.35',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -998,6 +1001,187 @@ function C4Context.restore()
 end
 -- END C4 CONTEXT BATCH
 
+-- BEGIN C4 UI SCOPE
+-- The verified NativeUiGuard consumer only uses two avatar flags. Keep its
+-- native UI-stack reader intact; do not build an action/ammo capability here.
+-- Every mission/player/avatar/selected-C4 guard is read and validated fresh.
+local C4UI={records={},active=0,attempts=0}
+M.c4_ui_scope=C4UI
+local function ui_upvalue(fn,wanted)
+    for i=1,64 do
+        local name,value=debug.getupvalue(fn,i);if not name then break end
+        if name==wanted then return value,i end
+    end
+end
+function C4UI.make_scope_reader(original)
+    local R,D,u32,resource,hex,product_low,bit,AVATAR,DETONATOR,INVALID
+    local function snapshot(api,game,extend)
+        local guards,reads,bytes={},0,0
+        local validation_reads,validation_bytes=0,0
+        local function read(at,n,guard)
+            assert(type(at)=='number' and at>=65536 and at+n<0x800000000000,'invalid_address')
+            reads=reads+1;bytes=bytes+n
+            assert(n>0 and n<=4096 and reads<=768 and bytes<=32768,'snapshot_budget')
+            local b=assert(api.read(at,n),'read_unavailable')
+            assert(#b==n,'short_read')
+            if guard then guards[#guards+1]={at=at,bytes=b}end
+            return b
+        end
+        local function ptr(at,guard)
+            local p=assert(api.pointer(read(at,8,guard)),'pointer_unavailable')
+            assert(p>=65536 and p<0x800000000000,'invalid_pointer')
+            return p
+        end
+        local function global(rva)return ptr(game+rva,true)end
+        local function lookup(at,key,limit)
+            local h=read(at,20,true)
+            local n,empty,mult=u32(h,8),u32(h,12),u32(h,16)
+            assert(n<=limit and (n==0 or bit.band(n,n-1)==0),'unsupported_map')
+            if n==0 or key==empty or key==INVALID then return nil end
+            local p=assert(api.pointer(h),'map_pointer_unavailable')
+            for probe=0,math.min(n,128)-1 do
+                local row=read(p+((product_low(key,mult)+probe)%n)*8,8,true)
+                local k=u32(row,0)
+                if k==key then
+                    local index=u32(row,4)
+                    return index~=INVALID and index or nil
+                end
+                if k==empty then return nil end
+            end
+            error('map_probe_limit')
+        end
+        local validate
+        local function checked()
+            if not validate then
+                validate=GuardBatch.new(guards,api,function(n)
+                    validation_reads=validation_reads+1;validation_bytes=validation_bytes+n
+                    assert(validation_reads<=768 and validation_bytes<=32768,'snapshot_validation_budget')
+                end)
+            end
+            return validate()
+        end
+        local function finish(extra)
+            if not checked()then return nil,'context_changed_during_read'end
+            return {},nil,extra
+        end
+        local mode=read(global(R.global_mode),0x44,true)
+        if u32(mode,8)==0 or u32(mode,0x40)<1 or u32(mode,0x40)>7 then return finish()end
+        local pm=global(R.global_player)
+        local counts=read(pm+0x84,8,true)
+        assert(u32(counts,0)<=4 and u32(counts,4)<=4,'unsupported_player_counts')
+        if u32(counts,0)==0 or u32(counts,4)==0 then return finish()end
+        local player=read(ptr(pm+0xe8,true),24,true)
+        if bit.band(player:byte(21),1)==0 then return finish()end
+        local unit=u32(read(pm+0x3a8,4,true),0)
+        if unit==0x7fff then return finish()end
+        local owner=global(R.global_owner)
+        local ei=lookup(owner+D.entity_unit_map,unit,1048576)
+        if not ei then return finish()end
+        assert(ei<262144,'entity_index_limit')
+        local entity=read(owner+D.entity_array+ei*24,24,true)
+        if resource(entity)~=AVATAR or bit.band(entity:byte(21),1)==0 then return finish()end
+        local id=u32(entity,8)
+        local avatar=global(R.global_avatar)
+        local ai=lookup(avatar+0xf8,id,64)
+        local n=u32(read(avatar+0x6c,4,true),0)
+        assert(n<=8,'avatar_count_limit')
+        if not ai or ai>=n then return finish()end
+        if read(ptr(avatar+0x110+ai*8,true),24,true)~=entity then return finish()end
+        local inventory=global(R.global_inventory)
+        local ii=lookup(inventory+0x28,id,65536)
+        local count=u32(read(inventory+0x14,4,true),0)
+        assert(count<=4096,'inventory_count_limit')
+        if not ii or ii>=count then return finish()end
+        if read(ptr(ptr(inventory+0x40,true)+ii*8,true),24,true)~=entity then return finish()end
+        local state=read(ptr(inventory+0x50,true)+ii*48,48,true)
+        local slot=u32(state,0x1c)
+        local offsets={[1]=0,[2]=4,[3]=8,[4]=16,[5]=16,[6]=12}
+        if not offsets[slot]then return finish()end
+        local weapon_id=u32(state,offsets[slot])
+        if weapon_id==0 or weapon_id==INVALID then return finish()end
+        local wi=lookup(owner+D.entity_id_map,weapon_id,1048576)
+        if not wi then return finish()end
+        assert(wi<262144,'weapon_entity_index_limit')
+        local weapon=read(owner+D.entity_array+wi*24,24,true)
+        if u32(weapon,8)~=weapon_id or resource(weapon)~=DETONATOR or
+            bit.band(weapon:byte(21),1)==0 then return finish()end
+        local extra=extend({read=read,avatar=avatar,avatar_index=ai})
+        return finish(extra)
+    end
+    for i=1,32 do
+        local name=debug.getupvalue(snapshot,i);if not name then break end
+        if name~='GuardBatch' then
+            local _,slot=ui_upvalue(original,name)
+            assert(slot,'ui_scope_upvalue_missing:'..name)
+            debug.upvaluejoin(snapshot,i,original,slot)
+        end
+    end
+    return snapshot
+end
+function C4UI.attach(target)
+    if not cfg.enabled or not cfg.c4_context_batch or type(target)~='function' or
+        type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes) or
+        function_chunk(target):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
+    local owned=C4UI.records[target]
+    if owned then
+        local _,value=debug.getupvalue(target,owned.slot)
+        if value==owned.replacement then return true end
+    end
+    local length,hash=C4Batch.signature(target)
+    if not ((length==1108 and hash==589953478) or (length==927 and hash==52868270))then return false end
+    local original,slot=ui_upvalue(target,'avatar_ui')
+    if type(original)~='function' or
+        function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
+    length,hash=C4Batch.signature(original)
+    if not ((length==352 and hash==2875083371) or (length==311 and hash==1218919096))then return false end
+    local initial_base=ui_upvalue(original,'base')
+    if type(initial_base)~='table' or getmetatable(initial_base)then return false end
+    local record=C4Context.records[initial_base]
+    local current=rawget(initial_base,'snapshot')
+    local full=record and current==record.replacement and record.original or current
+    if type(full)~='function' or
+        function_chunk(full):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
+    length,hash=C4Batch.signature(full)
+    if not ((length==6667 and hash==1783324827) or (length==6435 and hash==2083852633))then return false end
+    local ok,scope=pcall(C4UI.make_scope_reader,full)
+    if not ok then return false end
+    local api,game,base,AvatarFlags,D
+    local function replacement()
+        local context=C4Context.records[initial_base]
+        local method=type(base)=='table' and rawget(base,'snapshot')
+        if not cfg.enabled or not cfg.c4_context_batch or
+            is_excluded('mods/etxp/c4_boundary_probe',excludes) or base~=initial_base or
+            not (method==full or context and method==context.replacement) then return original()end
+        local success,_,_,extra=pcall(scope,api,game,function(e)
+            local flags=e.read(e.avatar+0x53e880+e.avatar_index*0x1238,24,true)
+            return {tactical_map_active=AvatarFlags.has(flags,D.tactical_map),
+                weapon_menu_active=AvatarFlags.has(flags,D.weapon_menu)}
+        end)
+        return success and extra or {}
+    end
+    for i=1,32 do
+        local name=debug.getupvalue(replacement,i);if not name then break end
+        if name=='api' or name=='game' or name=='base' or name=='AvatarFlags' or name=='D'then
+            local _,index=ui_upvalue(original,name);if not index then return false end
+            debug.upvaluejoin(replacement,i,original,index)
+        end
+    end
+    debug.setupvalue(target,slot,replacement)
+    C4UI.records[target]={original=original,replacement=replacement,slot=slot}
+    C4UI.active=C4UI.active+1
+    log('C4 UI scope: active (fresh identity and map/menu flags; complete native UI stack retained)')
+    return true
+end
+function C4UI.restore()
+    for target,record in pairs(C4UI.records)do
+        local _,value=debug.getupvalue(target,record.slot)
+        if value==record.replacement then debug.setupvalue(target,record.slot,record.original)end
+        C4UI.records[target]=nil
+    end
+    C4UI.active=0;C4UI.attempts=0
+end
+-- END C4 UI SCOPE
+
 -- BEGIN C4 IDLE BATCH
 -- C4 AutoReload suspend/recovery contracts, under the MIT notice above.
 -- No native data caching and no skipped C4 callbacks: cancel/reset always runs.
@@ -1381,6 +1565,16 @@ function C4Pool.discover(roots)
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
     local context_wanted=C4Context and cfg.enabled and cfg.c4_context_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    if C4UI then
+        if not context_wanted and (C4UI.active>0 or C4UI.attempts>0)then C4UI.restore()end
+        C4UI.active=0
+        for target,record in pairs(C4UI.records)do
+            local _,value=debug.getupvalue(target,record.slot)
+            if value==record.replacement then C4UI.active=C4UI.active+1
+            else C4UI.records[target]=nil;C4UI.attempts=0 end
+        end
+    end
+    local ui_pending=C4UI and context_wanted and C4UI.active==0 and C4UI.attempts<8
     local native_wanted=C4Native and cfg.enabled and cfg.c4_native_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
     local idle_wanted=C4Idle and cfg.enabled and cfg.c4_idle_batch and
@@ -1439,8 +1633,9 @@ function C4Pool.discover(roots)
         (not batch_wanted or C4Batch and C4Batch.active>0) and
         (not context_wanted or C4Context.active>0) and
         (not native_wanted or C4Native.active>0) and
-        (not idle_wanted or C4Idle.active>0)) or C4Pool.attempts>=8 then return end
+        (not idle_wanted or C4Idle.active>0) and not ui_pending) or C4Pool.attempts>=8 then return end
     C4Pool.attempts=C4Pool.attempts+1
+    if ui_pending then C4UI.attempts=C4UI.attempts+1 end
     local pending,seen={},{}
     local function push(value)
         local kind=type(value)
@@ -1461,6 +1656,7 @@ function C4Pool.discover(roots)
                 local name,next_=debug.getupvalue(value,i)
                 if not name then break end
                 if is_c4 then
+                    if ui_pending and name=='native_ui' then C4UI.attach(next_)end
                     if idle_wanted and name=='auto_reload' then C4Idle.attach(next_)end
                     if native_wanted then C4Native.attach(next_)end
                     if name=='AimInputState' and C4Batch and batch_wanted then C4Batch.attach(next_)end
@@ -1469,11 +1665,13 @@ function C4Pool.discover(roots)
                        (not batch_wanted or C4Batch and C4Batch.active>0) and
                        (not context_wanted or C4Context.active>0) and
                        (not native_wanted or C4Native.active>0) and
-                       (not idle_wanted or C4Idle.active>0) then return end
+                       (not idle_wanted or C4Idle.active>0) and
+                       (not ui_pending or C4UI.active>0) then return end
                     if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
                 elseif type(next_)=='function' and
                        (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
-                        name=='previous_update' or name=='original_update' or name=='next_update') then
+                        name=='previous_update' or name=='original_update' or name=='next_update' or
+                        name=='base_prev') then
                     push(next_)
                 end
             end
@@ -1484,7 +1682,8 @@ function C4Pool.discover(roots)
             if C4Pool.attach(value) and (not batch_wanted or C4Batch and C4Batch.active>0) and
                        (not context_wanted or C4Context.active>0) and
                        (not native_wanted or C4Native.active>0) and
-                       (not idle_wanted or C4Idle.active>0) then return end
+                       (not idle_wanted or C4Idle.active>0) and
+                       (not ui_pending or C4UI.active>0) then return end
             local count=0
             for _,next_ in next,value do
                 count=count+1;if count>64 then break end
@@ -1499,6 +1698,9 @@ function C4Pool.discover(roots)
         if context_wanted and C4Context.active==0 then
             log('C4 context batch: no supported original snapshot found; unchanged')
         end
+    end
+    if ui_pending and C4UI.attempts==8 and C4UI.active==0 then
+        log('C4 UI scope: no supported flags-only consumer found; unchanged')
     end
 end
 -- END C4 READ POOL
@@ -2042,6 +2244,9 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
+Candidate 3.0.35: C4 UI scope optimization; live game acceptance pending.
+测试候选3.0.35：C4界面检查优化，尚待实际游戏验收。
+
 [Report an issue / 反馈问题]
   The game creates Collect-Logs.bat next to this README on first run
   (folder: %LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\).
@@ -2075,8 +2280,11 @@ local function provision_tools()
     Set no and restart to compare with the original reader; no third-party files change.
     / 改为no并重启可对照原版读取；不修改其他作者的安装文件。
   c4_context_batch=yes/no  candidate context validation batches (default no)
-  c4_native_batch=yes/no   candidate native code verification batches (default no)
     / 上下文校验分块测试，默认no。每项仍校验新数据；大读取失败回退。
+    Flags-only C4 UI checks keep fresh identity and map/menu flags, without action data.
+    / C4界面检查仅采集新鲜身份和地图/菜单标志，不采集无关动作数据。
+  c4_native_batch=yes/no   candidate native code verification batches (default no)
+    / 原生代码校验分块测试，默认no。
     Native actions, input policy and validation limits are preserved.
     / 保留原生动作、输入策略及校验限制。切换可热生效，不是稳定版保证。
   c4_idle_batch=yes/no     candidate idle auto-reload read gate (default no)
