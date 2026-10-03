@@ -175,3 +175,16 @@ python -B work/standalone/test_sb5_interdict.py
 
 本仓库具有独立 `.git` 和提交历史。原综合工作区保存实机证据、历史包和第三方只读
 参考。后续开发应在本仓库提交；两处不自动同步，部署前须核对源码差异。
+# 3.0.28 performance candidate
+
+Adds an optional `c4_native_batch=yes/no` setting (default `no`) for the verified
+C4 1.11 native-code verification function. Each verification reads fresh code
+bytes and compares every original guard in its original order. Adjacent guards
+on the same page can share one bounded read; failures fall back to the original
+field reads and errors. Unknown versions and later third-party replacements are
+left intact. Turning the option or Smooth off restores the original verifier.
+
+Independent owned-memory tests and the game's Lua library checks pass; this
+candidate has not yet been validated in a running mission. No C4 files or C4
+configuration files are modified. Existing input/context candidates retain their
+own settings and defaults.

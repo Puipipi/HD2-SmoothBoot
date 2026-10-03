@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.27' then return old end
+if old and old.version=='3.0.28' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -34,7 +34,10 @@ end
 if old and type(old.c4_context_batch)=='table' and type(old.c4_context_batch.restore)=='function' then
     pcall(old.c4_context_batch.restore)
 end
-local M={version='3.0.27',status='starting'}
+if old and type(old.c4_native_batch)=='table' and type(old.c4_native_batch.restore)=='function' then
+    pcall(old.c4_native_batch.restore)
+end
+local M={version='3.0.28',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -101,7 +104,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,ui_mods='',scanners='',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,c4_native_batch=false,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -136,7 +139,7 @@ local function conf()
                 w:write('throttle=auto\nprofile=yes\n')
                 w:write('# candidate: reuse C4 native read buffers, never cache memory or skip input\n')
                 w:write('c4_read_pool=yes\n')
-                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\n')
+                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\nc4_native_batch=no\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -223,6 +226,8 @@ local function conf()
         if v then defaults.c4_input_batch=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*c4_context_batch%s*=%s*(%a+)%s*$')
         if v then defaults.c4_context_batch=(v=='yes' or v=='true' or v=='on') end
+        v=line:match('^%s*c4_native_batch%s*=%s*(%a+)%s*$')
+        if v then defaults.c4_native_batch=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
                              'writer_release_s','writer_stagger_s',
@@ -952,6 +957,127 @@ function C4Context.restore()
 end
 -- END C4 CONTEXT BATCH
 
+-- BEGIN C4 NATIVE BATCH
+-- Original C4 verification contract, under the MIT notice above.
+-- Fresh code bytes on EVERY invocation; no cross-call byte cache or native writes.
+local NativeGuards=(function()
+-- Prototype: batch fresh native-code guard reads within one verification.
+local M={}
+function M.make(guards,read)
+    local refs,addresses,sizes,plan={},{},{},{}
+    local function rebuild()
+        local sorted={}
+        refs,addresses,sizes,plan={},{},{},{}
+        for i,g in ipairs(guards)do
+            refs[i]=g;addresses[i]=g.at;sizes[i]=#g.bytes
+            sorted[i]={at=g.at,last=g.at+#g.bytes,index=i}
+        end
+        table.sort(sorted,function(a,b)return a.at<b.at end)
+        local groups={}
+        for _,g in ipairs(sorted)do
+            local last=groups[#groups]
+            local finish=math.max(last and last.last or g.last,g.last)
+            if last and finish-last.at<=4096 and
+               math.floor(last.at/4096)==math.floor((finish-1)/4096)then
+                last.last=finish;last.bytes=last.bytes+g.last-g.at
+            else
+                last={at=g.at,last=g.last,bytes=g.last-g.at};groups[#groups+1]=last
+            end
+            plan[g.index]=last
+        end
+        -- Avoid huge copies for isolated small guards on the same page.
+        for i,g in ipairs(guards)do
+            local p=plan[i]
+            if p.last-p.at>math.max(512,p.bytes*16)then
+                plan[i]={at=g.at,last=g.at+#g.bytes}
+            end
+        end
+    end
+    return function()
+        local valid=#refs==#guards
+        if valid then for i,g in ipairs(guards)do
+            if refs[i]~=g or addresses[i]~=g.at or sizes[i]~=#g.bytes then
+                valid=false;break
+            end
+        end end
+        if not valid then rebuild()end
+        local data={}
+        for i,g in ipairs(guards)do
+            local p=plan[i];local n=p.last-p.at;local value
+            if p.at==g.at and n==#g.bytes then
+                -- Original-field failures keep the original error and order.
+                value=read(g.at,n)
+            else
+                local b=data[p]
+                if b==nil then
+                    local ok,result=pcall(read,p.at,n)
+                    b=ok and type(result)=='string' and #result==n and result or false
+                    data[p]=b
+                end
+                if b then value=b:sub(g.at-p.at+1,g.at-p.at+#g.bytes)
+                else value=read(g.at,#g.bytes)end
+            end
+            assert(value==g.bytes,'compat_live_code_changed:'..g.label)
+        end
+    end
+end
+return M
+
+end)()
+local C4Native={records={},active=0,guard_batch=NativeGuards}
+M.c4_native_batch=C4Native
+function C4Native.make(original,guard_index,read_index,guards,read)
+    local function bridge(at,n)return read(at,n)end
+    debug.upvaluejoin(bridge,1,original,read_index)
+    local previous=guards
+    local batch=NativeGuards.make(guards,bridge)
+    local function replacement()
+        if guards~=previous then
+            batch=NativeGuards.make(guards,bridge);previous=guards
+        end
+        return batch()
+    end
+    for i=1,16 do
+        local name=debug.getupvalue(replacement,i)
+        if not name then break end
+        if name=='guards' then debug.upvaluejoin(replacement,i,original,guard_index);return replacement end
+    end
+    error('native_guard_upvalue_missing')
+end
+function C4Native.attach(target)
+    if not cfg.enabled or not cfg.c4_native_batch or type(target)~='table' or getmetatable(target) or
+       type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
+    local original=rawget(target,'verify')
+    if type(original)~='function' or type(rawget(target,'symbols'))~='table' or
+       type(rawget(target,'fields'))~='table' or
+       function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
+    local length,hash=C4Batch.signature(original)
+    if length~=166 or (hash~=555425879 and hash~=287186998)then return false end
+    local guard_index,read_index,guards,read
+    for i=1,16 do
+        local name,value=debug.getupvalue(original,i);if not name then break end
+        if name=='guards' then guard_index,guards=i,value
+        elseif name=='read' then read_index,read=i,value end
+    end
+    if type(guards)~='table' or getmetatable(guards) or type(read)~='function' then return false end
+    local n,h=C4Batch.signature(read)
+    if n~=374 or (h~=3102229121 and h~=2000372290)then return false end
+    local ok,replacement=pcall(C4Native.make,original,guard_index,read_index,guards,read)
+    if not ok then return false end
+    C4Native.records[target]={original=original,replacement=replacement}
+    rawset(target,'verify',replacement);C4Native.active=C4Native.active+1
+    log('C4 native batch: active (verified original code guards; fresh checks before every action preserved)')
+    return true
+end
+function C4Native.restore()
+    for target,record in pairs(C4Native.records)do
+        if rawget(target,'verify')==record.replacement then rawset(target,'verify',record.original)end
+        C4Native.records[target]=nil
+    end
+    C4Native.active=0
+end
+-- END C4 NATIVE BATCH
+
 -- BEGIN C4 READ POOL
 -- Optional Smooth-owned runtime adapter for the measured C4 1.11 reader.
 -- No global FFI proxy, memory cache, native write, guard bypass, or tick skip.
@@ -1087,6 +1213,18 @@ function C4Pool.discover(roots)
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
     local context_wanted=C4Context and cfg.enabled and cfg.c4_context_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    local native_wanted=C4Native and cfg.enabled and cfg.c4_native_batch and
+        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    if C4Native then
+        if C4Native.active>0 and not native_wanted then
+            C4Native.restore();log('C4 native batch: disabled; original verifier restored')
+        end
+        C4Native.active=0
+        for target,record in pairs(C4Native.records)do
+            if rawget(target,'verify')==record.replacement then C4Native.active=C4Native.active+1
+            else C4Native.records[target]=nil;C4Pool.attempts=0 end
+        end
+    end
     if C4Context and C4Context.active>0 and not context_wanted then
         C4Context.restore();log('C4 context batch: disabled; original snapshot restored')
     end
@@ -1104,7 +1242,7 @@ function C4Pool.discover(roots)
        is_excluded('mods/etxp/c4_boundary_probe',excludes) then
         if C4Pool.active>0 then C4Pool.restore();log('C4 read pool: disabled; original reader restored') end
         C4Pool.attempts=0
-        if not batch_wanted and not context_wanted then return end
+        if not batch_wanted and not context_wanted and not native_wanted then return end
     end
     for _,record in pairs(C4Pool.records)do
         if record.profiling~=(not not cfg.c4_read_profile) or
@@ -1119,7 +1257,8 @@ function C4Pool.discover(roots)
     end
     if ((not pool_wanted or C4Pool.active>0) and
         (not batch_wanted or C4Batch and C4Batch.active>0) and
-        (not context_wanted or C4Context.active>0)) or C4Pool.attempts>=8 then return end
+        (not context_wanted or C4Context.active>0) and
+        (not native_wanted or C4Native.active>0)) or C4Pool.attempts>=8 then return end
     C4Pool.attempts=C4Pool.attempts+1
     local pending,seen={},{}
     local function push(value)
@@ -1141,11 +1280,13 @@ function C4Pool.discover(roots)
                 local name,next_=debug.getupvalue(value,i)
                 if not name then break end
                 if is_c4 then
+                    if native_wanted then C4Native.attach(next_)end
                     if name=='AimInputState' and C4Batch and batch_wanted then C4Batch.attach(next_)end
                     if (name=='ContextReader' or name=='reader') and context_wanted then C4Context.attach(next_)end
                     if name=='api' and C4Pool.attach(next_) and
                        (not batch_wanted or C4Batch and C4Batch.active>0) and
-                       (not context_wanted or C4Context.active>0) then return end
+                       (not context_wanted or C4Context.active>0) and
+                       (not native_wanted or C4Native.active>0) then return end
                     if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
                 elseif type(next_)=='function' and
                        (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
@@ -1154,9 +1295,11 @@ function C4Pool.discover(roots)
                 end
             end
         elseif getmetatable(value)==nil then
+            if native_wanted then C4Native.attach(value)end
             if context_wanted then C4Context.attach(value)end
             if C4Pool.attach(value) and (not batch_wanted or C4Batch and C4Batch.active>0) and
-                       (not context_wanted or C4Context.active>0) then return end
+                       (not context_wanted or C4Context.active>0) and
+                       (not native_wanted or C4Native.active>0) then return end
             local count=0
             for _,next_ in next,value do
                 count=count+1;if count>64 then break end
@@ -1165,6 +1308,7 @@ function C4Pool.discover(roots)
         end
     end
     if C4Pool.attempts==8 then
+        if native_wanted and C4Native.active==0 then log('C4 native batch: no supported original verifier found; unchanged')end
         if pool_wanted and C4Pool.active==0 then log('C4 read pool: no supported reader found; no changes made')end
         if context_wanted and C4Context.active==0 then
             log('C4 context batch: no supported original snapshot found; unchanged')
@@ -1682,6 +1826,7 @@ local function provision_tools()
     Set no and restart to compare with the original reader; no third-party files change.
     / 改为no并重启可对照原版读取；不修改其他作者的安装文件。
   c4_context_batch=yes/no  candidate context validation batches (default no)
+  c4_native_batch=yes/no   candidate native code verification batches (default no)
     / 上下文校验分块测试，默认no。每项仍校验新数据；大读取失败回退。
     Native actions, input policy and validation limits are preserved.
     / 保留原生动作、输入策略及校验限制。切换可热生效，不是稳定版保证。
