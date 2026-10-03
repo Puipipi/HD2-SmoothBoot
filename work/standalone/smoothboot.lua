@@ -1052,7 +1052,7 @@ function C4Native.attach(target)
        type(rawget(target,'fields'))~='table' or
        function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
     local length,hash=C4Batch.signature(original)
-    if length~=166 or (hash~=555425879 and hash~=287186998)then return false end
+    if length~=166 or (hash~=637608044 and hash~=369369163)then return false end
     local guard_index,read_index,guards,read
     for i=1,16 do
         local name,value=debug.getupvalue(original,i);if not name then break end
