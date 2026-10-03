@@ -24,9 +24,12 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.35' then return old end
+if old and old.version=='3.0.36' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
+end
+if old and type(old.c4_input_scope)=='table' and type(old.c4_input_scope.restore)=='function' then
+    pcall(old.c4_input_scope.restore)
 end
 if old and type(old.c4_input_batch)=='table' and type(old.c4_input_batch.restore)=='function' then
     pcall(old.c4_input_batch.restore)
@@ -46,7 +49,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.35',status='starting'}
+local M={version='3.0.36',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -1430,6 +1433,199 @@ function C4Native.restore()
 end
 -- END C4 NATIVE BATCH
 
+-- BEGIN C4 INPUT SCOPE
+-- Bound code verification to native calls actually made by owned input
+-- maintenance. Dynamic snapshots/masks/policies remain fresh every invocation.
+-- Native acquisition, restoration and actions always retain full verification.
+local C4InputScope={records={},active=0,attempts=0}
+M.c4_input_scope=C4InputScope
+local function input_up(fn,wanted)
+    for i=1,64 do local name,value=debug.getupvalue(fn,i);if not name then break end
+        if name==wanted then return value,i end
+    end
+end
+local function input_signature(fn,length,modern,game)
+    if type(fn)~='function' or function_chunk(fn):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe'then return false end
+    local n,h=C4Batch.signature(fn);return n==length and (h==modern or h==game)
+end
+function C4InputScope.mapping_check(resolved)
+    local record=C4Native.records[resolved];assert(record,'input_scope_native_adapter_missing')
+    local original=record.original
+    local guards,guard_slot=input_up(original,'guards')
+    local reader,read_slot=input_up(original,'read')
+    assert(type(guards)=='table' and type(reader)=='function','input_scope_guards_missing')
+    local initial_guards,initial_read=guards,reader
+    local short=C4Native.make_short_reader(reader)
+    local selected,check={},nil
+    local function scoped()
+        if guards~=initial_guards or reader~=initial_read then return record.replacement()end
+        local indices,mappings,index_switches,mapping_switches=0,0,0,0
+        local count=0;local changed=not check
+        for _,g in ipairs(guards)do
+            local label=g.label
+            if type(label)=='string' and (label=='fn_input_index' or label=='fn_input_mapping' or
+                label=='fn_input_index:switch_table' or label=='fn_input_mapping:switch_table')then
+                count=count+1
+                if selected[count]~=g then changed=true end
+                selected[count]=g
+                if label=='fn_input_index' and #g.bytes==40 then indices=indices+1
+                elseif label=='fn_input_mapping' and #g.bytes==974 then mappings=mappings+1
+                elseif label=='fn_input_index:switch_table' and #g.bytes==52 then index_switches=index_switches+1
+                elseif label=='fn_input_mapping:switch_table' and #g.bytes==40 then mapping_switches=mapping_switches+1
+                else return record.replacement()end
+            elseif type(label)=='string' and (label:match('^fn_input_index:') or
+                label:match('^fn_input_mapping:'))then return record.replacement()
+            end
+        end
+        if count~=5 or indices~=1 or mappings~=1 or index_switches~=1 or mapping_switches~=2 then
+            return record.replacement()
+        end
+        if #selected~=count then changed=true end
+        for i=#selected,count+1,-1 do selected[i]=nil end
+        if changed then check=NativeGuards.make(selected,short)end
+        -- Only membership/plans persist. Native code bytes are read fresh.
+        return check()
+    end
+    for i=1,32 do local name=debug.getupvalue(scoped,i);if not name then break end
+        if name=='guards' then debug.upvaluejoin(scoped,i,original,guard_slot)
+        elseif name=='reader' then debug.upvaluejoin(scoped,i,original,read_slot)end
+    end
+    return scoped
+end
+function C4InputScope.make(target,original)
+    assert(input_signature(original,198,3142655543,2800164366),'input_scope_sync_unknown')
+    local known_step=input_up(original,'step')
+    local length,hash=C4Batch.signature(known_step)
+    assert((length==1453 and hash==4103536327) or (length==1436 and hash==2289891480),'input_scope_step_unknown')
+    local self=input_up(original,'self');assert(self==target,'input_scope_state_unknown')
+    local known_stop=rawget(target,'stop')
+    assert(input_signature(known_stop,539,2772262522,1881759314),'input_scope_stop_unknown')
+    local known_read=input_up(known_step,'read')
+    assert(input_signature(known_read,67,3076458533,3025799190),'input_scope_read_unknown')
+    local state=input_up(known_read,'AimInputState')
+    assert(type(state)=='table' and not getmetatable(state),'input_scope_reader_unknown')
+    local known_policy=rawget(state,'policy')
+    assert(input_signature(known_policy,615,1364621487,3459610720),'input_scope_policy_unknown')
+    local state_record=C4Batch.records[state]
+    local current_read=rawget(state,'read')
+    local state_read=state_record and current_read==state_record.replacement and state_record.original or current_read
+    local n,h=C4Batch.signature(state_read)
+    assert((n==2920 and h==3910151087) or (n==2847 and h==3465483342),'input_scope_state_read_unknown')
+    local known_backend=input_up(known_step,'backend')
+    local known_verify=rawget(known_backend,'verify')
+    assert(input_signature(known_verify,39,1181484356,1161102651),'input_scope_verify_unknown')
+    local resolved=input_up(known_verify,'resolved')
+    assert(resolved==rawget(known_backend,'compatibility'),'input_scope_compatibility_unknown')
+    if not C4Native.records[resolved]then assert(C4Native.attach(resolved),'input_scope_native_unknown')end
+    local native_record=C4Native.records[resolved]
+    local mapping_verify=C4InputScope.mapping_check(resolved)
+    local known_native=input_up(known_step,'native')
+    local mapping=rawget(known_native,'input_mapping')
+    assert(input_signature(mapping,109,1350766942,1113002286),'input_scope_mapping_unknown')
+    local mapping_call=input_up(mapping,'input_mapping')
+    local known_spec=input_up(known_step,'spec')
+    assert(input_up(known_read,'native')==known_native and input_up(known_read,'spec')==known_spec and
+        input_up(known_step,'AimInputState')==state,'input_scope_reader_cells_unknown')
+    local backend,spec,profile,publish,read,AimInputState,base,native,D
+    local function step(enabled,now)
+        if not enabled then
+            local ok,why=self.stop();assert(ok,why);publish('inactive');return
+        end
+        local row,_,cap=backend.snapshot()
+        if not cap or cap.interrupt then
+            local ok,why=self.stop();assert(ok,why);publish('outside_c4');return
+        end
+        local codes=spec.fire or profile(now)
+        if not codes then
+            local ok,why=self.stop();assert(ok,why);publish('unavailable','mbm_assignments_missing');return
+        end
+        if self.lease and not self.lease.pending then
+            if not spec.fire then mapping_verify()end
+        else backend.verify()end
+        local p=read(codes)
+        local suppress,reason=true,'mbm_owns_c4_fire'
+        if not spec.fire then suppress,reason=AimInputState.policy(base,p)end
+        if self.lease and (self.lease.owner~=p.owner or self.lease.identity~=cap.identity or
+            not p.mask or p.mask.bytes~=self.lease.expected)then
+            local ok,why=self.stop();assert(ok,why);p=read(codes)
+        end
+        if not suppress then
+            local ok,why=self.stop();assert(ok,why);publish('preserved',reason);return
+        end
+        if self.lease then publish('owned',reason);return end
+        if p.mask and p.mask.mode~=0 then publish('external_inhibition');return end
+        if p.held then publish(spec.fire and 'waiting_for_fire_release' or 'waiting_for_aim_release');return end
+        assert(p.mask or p.count<D.input_inhibit_capacity,'aim_inhibition_full')
+        -- Mismatch/release may have cleared the old lease after scoped checks.
+        -- Full verification is mandatory before any new native inhibition.
+        backend.verify()
+        publish('acquire',reason)
+        assert(cap.same() and p.same(),'aim_acquire_context_changed')
+        self.lease={owner=p.owner,identity=cap.identity,pending=true}
+        native.input_inhibit(p.owner,spec.action)
+        local q=read()
+        assert(q.owner==p.owner and q.mask and q.mask.mode==1 and
+            q.mask.bytes:sub(17,24)==string.rep('\0',8),'aim_acquire_failed')
+        self.lease.expected=q.mask.bytes;self.lease.pending=false;publish('owned',reason)
+    end
+    for i=1,32 do local name=debug.getupvalue(step,i);if not name then break end
+        if name~='mapping_verify' then
+            local _,slot=input_up(known_step,name);assert(slot,'input_scope_cell_missing:'..name)
+            debug.upvaluejoin(step,i,known_step,slot)
+        end
+    end
+    local function replacement(enabled,now)
+        local own=C4Batch.records[state]
+        local method=rawget(state,'read')
+        if not cfg.enabled or not cfg.c4_native_batch or is_excluded('mods/etxp/c4_boundary_probe',excludes) or
+            input_up(original,'step')~=known_step or input_up(known_step,'read')~=known_read or
+            input_up(known_step,'backend')~=known_backend or input_up(known_step,'native')~=known_native or
+            input_up(known_read,'AimInputState')~=state or input_up(known_step,'AimInputState')~=state or
+            input_up(known_read,'native')~=known_native or input_up(known_read,'spec')~=known_spec or
+            input_up(known_step,'spec')~=known_spec or input_up(mapping,'input_mapping')~=mapping_call or
+            self~=target or rawget(target,'stop')~=known_stop or rawget(state,'policy')~=known_policy or
+            not (method==state_read or own and method==own.replacement) or
+            rawget(known_backend,'verify')~=known_verify or rawget(known_backend,'compatibility')~=resolved or
+            input_up(known_verify,'resolved')~=resolved or C4Native.records[resolved]~=native_record or
+            not (rawget(resolved,'verify')==native_record.replacement or rawget(resolved,'verify')==native_record.original) or
+            rawget(known_native,'input_mapping')~=mapping then return original(enabled,now)end
+        local ok,why=pcall(step,enabled,now)
+        if not ok then
+            local restored,ok,reason=pcall(self.stop)
+            publish('unavailable',tostring(why)..((not restored or not ok)and '; restore: '..tostring(reason or ok)or ''))
+        end
+    end
+    for i=1,32 do local name=debug.getupvalue(replacement,i);if not name then break end
+        if name=='self' or name=='publish'then
+            local _,slot=input_up(original,name);assert(slot,'input_scope_sync_cell_missing:'..name)
+            debug.upvaluejoin(replacement,i,original,slot)
+        end
+    end
+    return replacement
+end
+function C4InputScope.attach(target)
+    if not cfg.enabled or not cfg.c4_native_batch or type(target)~='table' or getmetatable(target)or
+        type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes)then return false end
+    local owned=C4InputScope.records[target]
+    if owned and rawget(target,'sync')==owned.replacement then return true end
+    local original=rawget(target,'sync')
+    if not input_signature(original,198,3142655543,2800164366)then return false end
+    local ok,replacement=pcall(C4InputScope.make,target,original)
+    if not ok then log('C4 input scope: unknown dependency; unchanged: '..tostring(replacement));return false end
+    C4InputScope.records[target]={original=original,replacement=replacement}
+    rawset(target,'sync',replacement);C4InputScope.active=C4InputScope.active+1
+    log('C4 input scope: active (fresh owned-input guards; native acquisition/restore/actions keep full verification)')
+    return true
+end
+function C4InputScope.restore()
+    for target,record in pairs(C4InputScope.records)do
+        if rawget(target,'sync')==record.replacement then rawset(target,'sync',record.original)end
+        C4InputScope.records[target]=nil
+    end
+    C4InputScope.active=0;C4InputScope.attempts=0
+end
+-- END C4 INPUT SCOPE
+
 -- BEGIN C4 READ POOL
 -- Optional Smooth-owned runtime adapter for the measured C4 1.11 reader.
 -- No global FFI proxy, memory cache, native write, guard bypass, or tick skip.
@@ -1577,6 +1773,17 @@ function C4Pool.discover(roots)
     local ui_pending=C4UI and context_wanted and C4UI.active==0 and C4UI.attempts<8
     local native_wanted=C4Native and cfg.enabled and cfg.c4_native_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    if C4InputScope then
+        if not native_wanted and (C4InputScope.active>0 or C4InputScope.attempts>0)then
+            C4InputScope.restore();log('C4 input scope: disabled; original sync restored')
+        end
+        C4InputScope.active=0
+        for target,record in pairs(C4InputScope.records)do
+            if rawget(target,'sync')==record.replacement then C4InputScope.active=C4InputScope.active+1
+            else C4InputScope.records[target]=nil;C4InputScope.attempts=0 end
+        end
+    end
+    local scope_pending=C4InputScope and native_wanted and C4InputScope.active<2 and C4InputScope.attempts<8
     local idle_wanted=C4Idle and cfg.enabled and cfg.c4_idle_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
     if C4Idle then
@@ -1629,13 +1836,16 @@ function C4Pool.discover(roots)
         if rawget(api,'read')==record.pooled then C4Pool.active=C4Pool.active+1
         else C4Pool.records[api]=nil end
     end
-    if ((not pool_wanted or C4Pool.active>0) and
+    local core_complete=((not pool_wanted or C4Pool.active>0) and
         (not batch_wanted or C4Batch and C4Batch.active>0) and
         (not context_wanted or C4Context.active>0) and
         (not native_wanted or C4Native.active>0) and
-        (not idle_wanted or C4Idle.active>0) and not ui_pending) or C4Pool.attempts>=8 then return end
-    C4Pool.attempts=C4Pool.attempts+1
+        (not idle_wanted or C4Idle.active>0))
+    if (core_complete or C4Pool.attempts>=8) and not ui_pending and not scope_pending then return end
+    local core_last=C4Pool.attempts==7
+    C4Pool.attempts=math.min(8,C4Pool.attempts+1)
     if ui_pending then C4UI.attempts=C4UI.attempts+1 end
+    if scope_pending then C4InputScope.attempts=C4InputScope.attempts+1 end
     local pending,seen={},{}
     local function push(value)
         local kind=type(value)
@@ -1656,6 +1866,7 @@ function C4Pool.discover(roots)
                 local name,next_=debug.getupvalue(value,i)
                 if not name then break end
                 if is_c4 then
+                    if scope_pending then C4InputScope.attach(next_)end
                     if ui_pending and name=='native_ui' then C4UI.attach(next_)end
                     if idle_wanted and name=='auto_reload' then C4Idle.attach(next_)end
                     if native_wanted then C4Native.attach(next_)end
@@ -1666,7 +1877,8 @@ function C4Pool.discover(roots)
                        (not context_wanted or C4Context.active>0) and
                        (not native_wanted or C4Native.active>0) and
                        (not idle_wanted or C4Idle.active>0) and
-                       (not ui_pending or C4UI.active>0) then return end
+                       (not ui_pending or C4UI.active>0) and
+                       (not scope_pending or C4InputScope.active>=2) then return end
                     if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
                 elseif type(next_)=='function' and
                        (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
@@ -1676,6 +1888,7 @@ function C4Pool.discover(roots)
                 end
             end
         elseif getmetatable(value)==nil then
+            if scope_pending then C4InputScope.attach(value)end
             if native_wanted then C4Native.attach(value)end
             if idle_wanted then C4Idle.attach(value)end
             if context_wanted then C4Context.attach(value)end
@@ -1683,7 +1896,8 @@ function C4Pool.discover(roots)
                        (not context_wanted or C4Context.active>0) and
                        (not native_wanted or C4Native.active>0) and
                        (not idle_wanted or C4Idle.active>0) and
-                       (not ui_pending or C4UI.active>0) then return end
+                       (not ui_pending or C4UI.active>0) and
+                       (not scope_pending or C4InputScope.active>=2) then return end
             local count=0
             for _,next_ in next,value do
                 count=count+1;if count>64 then break end
@@ -1691,7 +1905,10 @@ function C4Pool.discover(roots)
             end
         end
     end
-    if C4Pool.attempts==8 then
+    if scope_pending and C4InputScope.attempts==8 and C4InputScope.active<2 then
+        log('C4 input scope: supported input gates not found; remaining syncs unchanged')
+    end
+    if core_last then
         if idle_wanted and C4Idle.active==0 then log('C4 idle batch: no supported original suspend found; unchanged')end
         if native_wanted and C4Native.active==0 then log('C4 native batch: no supported original verifier found; unchanged')end
         if pool_wanted and C4Pool.active==0 then log('C4 read pool: no supported reader found; no changes made')end
@@ -2244,8 +2461,8 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.35: C4 UI scope optimization; live game acceptance pending.
-测试候选3.0.35：C4界面检查优化，尚待实际游戏验收。
+Candidate 3.0.36: bounded C4 owned-input verification; live game acceptance pending.
+测试候选3.0.36：限制C4已接管输入的重复代码校验，尚待实际游戏验收。
 
 [Report an issue / 反馈问题]
   The game creates Collect-Logs.bat next to this README on first run
@@ -2284,6 +2501,10 @@ Candidate 3.0.35: C4 UI scope optimization; live game acceptance pending.
     Flags-only C4 UI checks keep fresh identity and map/menu flags, without action data.
     / C4界面检查仅采集新鲜身份和地图/菜单标志，不采集无关动作数据。
   c4_native_batch=yes/no   candidate native code verification batches (default no)
+    Owned aim maintenance checks fresh mapping/index code only; owned fire makes no native call.
+    Acquisition, restoration and actions retain full verification; all dynamic inputs stay fresh.
+    / 已接管瞄准只校验当前调用的映射/索引代码；已接管开火无原生调用。
+    / 建立接管、恢复和动作保留完整校验；每次仍读取最新动态输入。
     / 原生代码校验分块测试，默认no。
     Native actions, input policy and validation limits are preserved.
     / 保留原生动作、输入策略及校验限制。切换可热生效，不是稳定版保证。

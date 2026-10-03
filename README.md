@@ -1,5 +1,42 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.36**：限制已确认的 C4 1.11 常态输入维护中的重复原生代码
+校验。已经接管的瞄准输入只检查本次实际调用的映射/索引函数及跳转表；已接管
+开火输入不调用原生函数。每次仍完整读取动态状态、按键、输入掩码和绑定，保留
+所有前后回调。建立接管、恢复输入、投掷和引爆仍完整校验。未知源码或依赖变化
+保留/恢复原逻辑；沿用默认关闭的 `c4_native_batch=yes`。不修改其他模组文件或配置。
+
+现代 LuaJIT 和独立游戏 Lua 库通过45项故障/动态状态对照，以及完整模块120次
+前后回调、双输入门发现、重载和热关闭检查。85个保护字段的合成夹具中，两次
+已接管输入维护的代码读取从170降到5。**这是局部模拟，不是整套C4成本或实机
+FPS收益；3.0.36还需用户在游戏验收。** 用户负责游戏操作，退出后才部署。
+
+3.0.35实机同进程前台记录：主武器中位162FPS，C4中位137FPS；C4读取约1667次/
+Lua更新，主武器约316次。此前界面优化未解决掉帧。两轮分别有39.7/44.7秒前台
+样本，无法精确分离站立和跑动；看门狗60秒窗口混合后台等待，不能作纯阶段比较。
+
+Development candidate **3.0.36** limits redundant native-code verification in
+verified C4 1.11 owned-input maintenance. Owned aim checks fresh mapping/index
+code and switch tables; owned fire makes no native call. Dynamic snapshots,
+bindings, masks and every before/after callback remain fresh and complete.
+Acquisition, input restoration, throwing and detonation retain full verification.
+Unknown signatures or changed collaborators retain/restore original logic.
+Uses existing default-off `c4_native_batch=yes`; no third-party files/config changes.
+
+Modern LuaJIT and an independent game-library VM passed45 differential/fault
+checks plus120 paired callbacks, two-gate discovery, reload and hot opt-outs.
+In a synthetic85-guard fixture, two owned-input maintenance calls fell from170
+to5 code reads. **This is local simulation, not total C4 cost or in-game FPS.
+3.0.36 still needs user gameplay acceptance.** Only deploy after the user exits.
+
+3.0.35 foreground measurements in one process: primary median162FPS vs C4
+median137FPS, about316 vs1667 native reads per Lua update. The prior UI change
+did not solve the regression. Foreground segments lasted39.7/44.7 seconds;
+standing/running boundaries were not recorded. Watchdog60-second windows include
+background waiting and are not pure phase comparisons.
+
+以下保留历史候选记录。
+
 当前开发候选 **3.0.35**：参考 Consistent Vaulting 的轻量快照，在已核对的
 C4 1.11 界面检查中只读取需要的地图和武器菜单标志。每次仍重新检查任务、
 本地角色、登记表、背包、所持 C4 身份和所有已收集保护字段；原生界面栈检查
