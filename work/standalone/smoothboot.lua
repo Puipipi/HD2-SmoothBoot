@@ -24,11 +24,11 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.24' then return old end
+if old and old.version=='3.0.25' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
-local M={version='3.0.24',status='starting'}
+local M={version='3.0.25',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -95,7 +95,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,ui_mods='',scanners='',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -210,6 +210,8 @@ local function conf()
         if v then defaults.peer_suspend=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*c4_read_pool%s*=%s*(%a+)%s*$')
         if v then defaults.c4_read_pool=(v=='yes' or v=='true' or v=='on') end
+        v=line:match('^%s*c4_read_profile%s*=%s*(%a+)%s*$')
+        if v then defaults.c4_read_profile=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
                              'writer_release_s','writer_stagger_s',
@@ -411,11 +413,55 @@ function C4Pool.make_reader(ffi,rpm,process)
     end
     return pooled,function()return calls end
 end
+-- Opt-in diagnosis only: never replay a read, retain bytes or addresses,
+-- or change its result. A prime sampling interval reduces periodic aliasing.
+function C4Pool.make_probe(reader)
+    local state={calls=0,samples=0,errors=0,sites={}}
+    local function capture(size)
+        local parts={}
+        for level=2,10 do
+            local info=debug.getinfo(level,'nSl')
+            if not info then break end
+            local source=(info.source or ''):match('mods/[%w_./%-]+') or ''
+            if source:gsub('%.lua$','')=='mods/etxp/c4_boundary_probe' then
+                parts[#parts+1]=(info.name or '?')..':'..tostring(info.currentline)
+            end
+        end
+        local c4=rawget(_G,'HD2C4BoundaryProbe')
+        local phase=type(c4)=='table' and rawget(c4,'phase') or 'unknown'
+        local site=tostring(phase)..' size='..tostring(size)..' '..table.concat(parts,'>')
+        state.sites[site]=(state.sites[site] or 0)+1
+        state.samples=state.samples+1
+    end
+    local function probe(address,size)
+        state.calls=state.calls+1
+        if state.calls%509==0 then
+            if not pcall(capture,size) then state.errors=state.errors+1 end
+        end
+        return reader(address,size)
+    end
+    return probe,state
+end
+function C4Pool.report_probe()
+    for _,record in pairs(C4Pool.records) do
+        local state=record.profile
+        if state then
+            local sites={}
+            for site,count in pairs(state.sites)do sites[#sites+1]={site=site,count=count}end
+            table.sort(sites,function(a,b)return a.count>b.count end)
+            local top={}
+            for i=1,math.min(6,#sites)do top[#top+1]=sites[i].count..'x '..sites[i].site end
+            log('[C4-read-probe] reads='..state.calls..' samples='..state.samples..
+                ' errors='..state.errors..' top='..table.concat(top,'; '))
+            state.calls=0;state.samples=0;state.errors=0;state.sites={}
+        end
+    end
+end
 function C4Pool.attach(api)
     if type(api)~='table' or getmetatable(api)~=nil then return false end
     local existing=C4Pool.records[api]
     if existing and rawget(api,'read')==existing.pooled then return true end
-    if not cfg.enabled or not cfg.c4_read_pool then return false end
+    if not cfg.enabled or (not cfg.c4_read_pool and not cfg.c4_read_profile) then return false end
     local original=rawget(api,'read')
     if type(original)~='function' or
        function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' or
@@ -432,14 +478,19 @@ function C4Pool.attach(api)
        k==nil or type(process)~='cdata' then return false end
     local rpm=k.ReadProcessMemory
     if type(rpm)~='cdata' then return false end
-    local pooled,calls=C4Pool.make_reader(ffi,rpm,process)
-    local record={original=original,pooled=pooled,calls=calls}
+    local pooled,calls=original,function()return 0 end
+    if cfg.c4_read_pool then pooled,calls=C4Pool.make_reader(ffi,rpm,process)end
+    local profile
+    if cfg.c4_read_profile then pooled,profile=C4Pool.make_probe(pooled)end
+    local record={original=original,pooled=pooled,calls=calls,profile=profile,
+        profiling=not not cfg.c4_read_profile,pooling=not not cfg.c4_read_pool}
     C4Pool.records[api]=record
     C4Pool.last_original=original
     rawset(api,'read',pooled)
     C4Pool.active=0
     for _ in pairs(C4Pool.records) do C4Pool.active=C4Pool.active+1 end
     log('C4 read pool: active (verified 1.11 reader; live reads and frame callbacks preserved)')
+    if profile then log('[C4-read-probe] enabled; sample interval=509; pooled='..tostring(cfg.c4_read_pool))end
     return true
 end
 function C4Pool.restore()
@@ -458,11 +509,17 @@ function C4Pool.reads()
     return total
 end
 function C4Pool.discover(roots)
-    if not cfg.enabled or not cfg.c4_read_pool or
+    if not cfg.enabled or (not cfg.c4_read_pool and not cfg.c4_read_profile) or
        is_excluded('mods/etxp/c4_boundary_probe',excludes) then
         if C4Pool.active>0 then C4Pool.restore();log('C4 read pool: disabled; original reader restored') end
         C4Pool.attempts=0
         return
+    end
+    for _,record in pairs(C4Pool.records)do
+        if record.profiling~=(not not cfg.c4_read_profile) or
+           record.pooling~=(not not cfg.c4_read_pool) then
+            C4Pool.restore();C4Pool.attempts=0;break
+        end
     end
     C4Pool.active=0
     for api,record in pairs(C4Pool.records) do
@@ -1515,7 +1572,10 @@ wrapper=function(...)
     end
 
     if frames%1800==0 then
-        if C4Pool.active>0 then log('C4 read pool: active='..C4Pool.active..' live_reads='..C4Pool.reads()) end
+        if C4Pool.active>0 then
+            log('C4 read pool: active='..C4Pool.active..' live_reads='..C4Pool.reads())
+            C4Pool.report_probe()
+        end
         if cfg.snapshot then pcall(runtime_snapshot) end
         if cfg.snapshot then pcall(c4_snapshot) end
         local top={}

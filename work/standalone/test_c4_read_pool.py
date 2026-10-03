@@ -101,6 +101,57 @@ class ReadPool(unittest.TestCase):
             cfg.c4_read_pool=true;pool.discover({});assert(pool.attempts==1)
         ''')
 
+    def test_read_probe_counts_without_replaying_or_caching_reads(self):
+        self.rt.execute(r'''
+            local native_calls=0
+            local original=function(address,size)
+                native_calls=native_calls+1
+                if address==65536 then return nil end
+                return string.rep(string.char(native_calls%256),size)
+            end
+            local probe,state=pool.make_probe(original)
+            for i=1,1018 do
+                local value=probe(address,8)
+                assert(value==string.rep(string.char(i%256),8))
+            end
+            assert(probe(65536,8)==nil)
+            assert(native_calls==1019 and state.calls==1019 and state.samples==2)
+            local hits=0;for _,count in pairs(state.sites)do hits=hits+count end
+            assert(hits==2)
+        ''')
+
+    def test_read_probe_preserves_original_errors(self):
+        self.rt.execute(r'''
+            local probe=pool.make_probe(function()error('original_fault')end)
+            local ok,why=pcall(probe,address,8)
+            assert(not ok and why:find('original_fault',1,true))
+        ''')
+
+    def test_probe_records_real_c4_callsite_and_phase(self):
+        self.rt.execute(r'''
+            local probe,state=pool.make_probe(function()return 'fresh' end)
+            HD2C4BoundaryProbe={phase='before_original_update'}
+            local caller=assert(loadstring('local probe=...; return function()\n'..
+                'local value=probe(65536,8)\nreturn value\nend',
+                '@mods/etxp/c4_boundary_probe.lua'))(probe)
+            for i=1,509 do assert(caller()=='fresh')end
+            assert(state.samples==1)
+            local site=next(state.sites)
+            assert(site:find('before_original_update',1,true) and site:find(':2',1,true),site)
+            pool.records[{}]={profile=state};pool.report_probe()
+            assert(state.calls==0 and state.samples==0 and next(state.sites)==nil)
+        ''')
+
+    def test_probe_capture_failure_does_not_block_a_native_read(self):
+        self.rt.execute(r'''
+            local probe,state=pool.make_probe(function()return 'fresh' end)
+            local old_info=debug.getinfo
+            debug.getinfo=function()error('diagnostic_fault')end
+            for i=1,509 do assert(probe(address,8)=='fresh')end
+            debug.getinfo=old_info
+            assert(state.calls==509 and state.errors==1 and state.samples==0)
+        ''')
+
 
 if __name__=='__main__':
     unittest.main()

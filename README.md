@@ -1,5 +1,19 @@
 # HD2 SmoothBoot
 
+3.0.25 为 C4 掉帧诊断候选，尚未解决持有 C4 跑动时的帧率下降。
+同一对局关闭 3.0.24 的缓冲复用后，用户仍复现相同现象。
+新增 `c4_read_profile=yes` 临时采样，默认关闭；每 509 次读取采样一次调用位置，
+只记录调用位置和计数，不记录内存地址或数据，不跳过原读取和安全校验。
+诊断可配合 `c4_read_pool=no` 使用原始读取，关闭后恢复读取函数。
+采样期间的性能数据需注明诊断开销，不代表发布版的常态开销。
+
+3.0.25 is a diagnostic candidate, not a fix for the FPS drop when moving with C4.
+Optional `c4_read_profile=yes` samples callsites every 509 reads; it is off by default.
+Reads, validation and callbacks are preserved. No addresses or memory contents are logged.
+Use `c4_read_pool=no` to probe the original reader; disabling both restores it.
+
+以下保留 3.0.24 及此前候选的记录。
+
 开发候选：**3.0.24，试验 C4 1.11 的原生读取缓冲复用；实际游戏功能与整体收益仍待用户验收。**
 Development candidate: **3.0.24 trials native read-buffer reuse for C4 1.11. In-game C4 behavior and overall performance gains await validation.**
 
