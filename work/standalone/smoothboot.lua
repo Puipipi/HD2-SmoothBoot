@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.29' then return old end
+if old and old.version=='3.0.30' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -40,7 +40,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.29',status='starting'}
+local M={version='3.0.30',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -1031,9 +1031,50 @@ return M
 end)()
 local C4Native={records={},active=0,guard_batch=NativeGuards}
 M.c4_native_batch=C4Native
+function C4Native.make_short_reader(original)
+    local api_index,game_index,api,game
+    for i=1,16 do
+        local name,value=debug.getupvalue(original,i)
+        if not name then break end
+        if name=='api' then api_index,api=i,value
+        elseif name=='game' then game_index,game=i,value end
+    end
+    assert(api_index and game_index and type(api)=='table' and type(game)=='number',
+        'native_read_cells_missing')
+    local function short(rva,n)
+        -- Large guards keep the original multi-chunk reader and its failures.
+        if n>4096 then return original(rva,n)end
+        assert(rva>=0 and n>0 and rva+n<=0x10000000,'compat_read_bounds')
+        local bytes=assert(api.read(game+rva,n),
+            'compat_read_unavailable:'..string.format('%x',rva))
+        assert(#bytes==n,'compat_short_read')
+        -- Preserve concat's rejection of a later reader returning a table.
+        if type(bytes)~='string' then return table.concat({bytes})end
+        return bytes
+    end
+    for i=1,16 do
+        local name=debug.getupvalue(short,i)
+        if not name then break end
+        if name=='api' then debug.upvaluejoin(short,i,original,api_index)
+        elseif name=='game' then debug.upvaluejoin(short,i,original,game_index)end
+    end
+    return short
+end
 function C4Native.make(original,guard_index,read_index,guards,read)
-    local function bridge(at,n)return read(at,n)end
-    debug.upvaluejoin(bridge,1,original,read_index)
+    local observed=read
+    local short=C4Native.make_short_reader(read)
+    local function bridge(at,n)
+        if read==observed then return short(at,n)end
+        -- A replacement of the original reader cell must remain authoritative.
+        return read(at,n)
+    end
+    local joined=false
+    for i=1,16 do
+        local name=debug.getupvalue(bridge,i)
+        if not name then break end
+        if name=='read' then debug.upvaluejoin(bridge,i,original,read_index);joined=true;break end
+    end
+    assert(joined,'native_read_bridge_cell_missing')
     local previous=guards
     local batch=NativeGuards.make(guards,bridge)
     local function replacement()
@@ -1071,7 +1112,7 @@ function C4Native.attach(target)
     if not ok then return false end
     C4Native.records[target]={original=original,replacement=replacement}
     rawset(target,'verify',replacement);C4Native.active=C4Native.active+1
-    log('C4 native batch: active (verified original code guards; fresh checks before every action preserved)')
+    log('C4 native batch: active (verified original code guards; fresh checks and short-read allocation reduction)')
     return true
 end
 function C4Native.restore()

@@ -1,5 +1,26 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.30**：在已核对的 C4 1.11 原生校验读取中，单块读取
+直接返回本次新读出的字符串，省去每次创建临时表和拼接；超过4096字节仍用
+原来的分块读取。原字段校验、失败回退、动作及原始上值变化继续保留。
+沿用 `c4_native_batch=yes` 试验开关（发布默认no），不修改第三方文件或配置。
+
+3.0.29的任务内CPU采样已发现C4读取/校验热点及垃圾回收。按当前运行游戏中的
+真实校验位置构造独立进程测试，500次校验的临时分配约减少90%，耗时约减少11%。
+**这是独立测试结果，不是游戏FPS收益。用户仍报告持C4比主武器少约20帧；
+3.0.30尚待任务内功能与帧率验收，不能标为稳定版。**
+
+Development candidate **3.0.30** removes per-call temporary tables and concatenation
+from verified C4 1.11 single-chunk native guard reads. Every call still reads fresh
+bytes; large reads, guards, failures, actions and original upvalue changes retain
+their contracts. It uses the existing opt-in `c4_native_batch=yes` setting (default
+`no`). Third-party files and configuration are untouched.
+An independent owned-memory test using the actual running game's guard topology
+reduced temporary allocations by about 90% and elapsed time by about 11% for 500
+checks. **These are not in-game FPS results. Mission validation remains pending.**
+
+以下保留历史候选的记录，不能作为当前版本的实机验收。
+
 3.0.27 增加 **默认关闭的上下文校验合并候选**，`c4_context_batch=yes` 启用。
 这是针对实机短时采样中反复出现的 ContextReader 校验路径继续做的试验。
 只接入已核对完整字节码的原始 snapshot；共享原有布局和辅助函数的上值，
