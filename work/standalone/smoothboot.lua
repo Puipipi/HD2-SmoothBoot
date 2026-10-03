@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.32' then return old end
+if old and old.version=='3.0.33' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -34,13 +34,16 @@ end
 if old and type(old.c4_context_batch)=='table' and type(old.c4_context_batch.restore)=='function' then
     pcall(old.c4_context_batch.restore)
 end
+if old and type(old.c4_idle_batch)=='table' and type(old.c4_idle_batch.restore)=='function' then
+    pcall(old.c4_idle_batch.restore)
+end
 if old and type(old.c4_native_batch)=='table' and type(old.c4_native_batch.restore)=='function' then
     pcall(old.c4_native_batch.restore)
 end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.32',status='starting'}
+local M={version='3.0.33',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -107,7 +110,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,c4_native_batch=false,c4_cpu_profile=false,ui_mods='',scanners='',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,c4_native_batch=false,c4_idle_batch=false,c4_cpu_profile=false,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -142,7 +145,7 @@ local function conf()
                 w:write('throttle=auto\nprofile=yes\n')
                 w:write('# candidate: reuse C4 native read buffers, never cache memory or skip input\n')
                 w:write('c4_read_pool=yes\n')
-                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\nc4_native_batch=no\nc4_cpu_profile=no\n')
+                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\nc4_native_batch=no\nc4_idle_batch=no\nc4_cpu_profile=no\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -231,6 +234,8 @@ local function conf()
         if v then defaults.c4_context_batch=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*c4_native_batch%s*=%s*(%a+)%s*$')
         if v then defaults.c4_native_batch=(v=='yes' or v=='true' or v=='on') end
+        v=line:match('^%s*c4_idle_batch%s*=%s*(%a+)%s*$')
+        if v then defaults.c4_idle_batch=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*c4_cpu_profile%s*=%s*(%a+)%s*$')
         if v then defaults.c4_cpu_profile=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
@@ -966,6 +971,90 @@ function C4Context.restore()
 end
 -- END C4 CONTEXT BATCH
 
+-- BEGIN C4 IDLE BATCH
+-- C4 AutoReload suspend/recovery contracts, under the MIT notice above.
+-- No native data caching and no skipped C4 callbacks: cancel/reset always runs.
+local C4Idle={records={},active=0}
+M.c4_idle_batch=C4Idle
+function C4Idle.make(original)
+    local captures={}
+    for i=1,16 do
+        local name,value=debug.getupvalue(original,i);if not name then break end
+        captures[name]={value=value,index=i}
+    end
+    local backend=assert(captures.backend,'idle_backend_capture').value
+    local recovery=assert(captures.recovery,'idle_recovery_capture').value
+    local self=assert(captures.self,'idle_self_capture').value
+    assert(type(backend)=='table' and type(recovery)=='table' and type(self)=='table','idle_capture_type')
+    local snapshots,snapshot_slot
+    for i=1,16 do
+        local name,value=debug.getupvalue(backend.snapshot,i);if not name then break end
+        if name=='snapshots' then snapshots=value;snapshot_slot=i;break end
+    end
+    local function supported(fn,modern_length,modern_hash,game_length,game_hash)
+        if type(fn)~='function' or function_chunk(fn):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
+        local length,hash=C4Batch.signature(fn)
+        return length==modern_length and hash==modern_hash or length==game_length and hash==game_hash
+    end
+    assert(supported(recovery.observe,1061,1859309885,1038,3104295201),'idle_recovery_unsupported')
+    assert(supported(backend.snapshot,37,1207567830,37,1188365773),'idle_backend_unsupported')
+    assert(type(snapshots)=='table' and supported(snapshots.snapshot,261,1286216546,261,1151474522),'idle_phase_unsupported')
+    local observed_recovery,observer_slot
+    for i=1,16 do
+        local name,value=debug.getupvalue(recovery.observe,i);if not name then break end
+        if name=='self' then observed_recovery=value;observer_slot=i;break end
+    end
+    assert(observed_recovery==recovery,'idle_recovery_state_changed')
+    local known={backend=backend,recovery=recovery,self=self,observe=recovery.observe,
+        snapshot=backend.snapshot,phases=snapshots,phase_snapshot=snapshots.snapshot}
+    local function replacement(now)
+        if not cfg.enabled or not cfg.c4_idle_batch or
+           is_excluded('mods/etxp/c4_boundary_probe',excludes) or
+           backend~=known.backend or recovery~=known.recovery or self~=known.self or
+           backend.snapshot~=known.snapshot or recovery.observe~=known.observe or
+           snapshots~=known.phases or snapshots.snapshot~=known.phase_snapshot or
+           observed_recovery~=recovery or recovery.pending~=nil then
+            return original(now)
+        end
+        -- observe() returns immediately without pending recovery. Only the
+        -- read-only snapshot was redundant; preserve the original cancellation.
+        self.cancel('controls_suspended',true)
+    end
+    for i=1,32 do
+        local name=debug.getupvalue(replacement,i);if not name then break end
+        if name=='backend' or name=='recovery' or name=='self' then
+            debug.upvaluejoin(replacement,i,original,captures[name].index)
+        elseif name=='snapshots' then
+            debug.upvaluejoin(replacement,i,known.snapshot,snapshot_slot)
+        elseif name=='observed_recovery' then
+            debug.upvaluejoin(replacement,i,known.observe,observer_slot)
+        end
+    end
+    return replacement
+end
+function C4Idle.attach(target)
+    if not cfg.enabled or not cfg.c4_idle_batch or type(target)~='table' or getmetatable(target) or
+       type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
+    local original=rawget(target,'suspend')
+    if type(original)~='function' or function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
+    local length,hash=C4Batch.signature(original)
+    if not (length==150 and (hash==417995611 or hash==266935112)) then return false end
+    local ok,replacement=pcall(C4Idle.make,original)
+    if not ok then log('C4 idle batch: unsupported collaborators; unchanged');return false end
+    C4Idle.records[target]={original=original,replacement=replacement}
+    rawset(target,'suspend',replacement);C4Idle.active=1
+    log('C4 idle batch: active (empty recovery skips read-only snapshot; cancel and pending recovery preserved)')
+    return true
+end
+function C4Idle.restore()
+    for target,record in pairs(C4Idle.records)do
+        if rawget(target,'suspend')==record.replacement then rawset(target,'suspend',record.original)end
+        C4Idle.records[target]=nil
+    end
+    C4Idle.active=0
+end
+-- END C4 IDLE BATCH
+
 -- BEGIN C4 NATIVE BATCH
 -- Original C4 verification contract, under the MIT notice above.
 -- Fresh code bytes on EVERY invocation; no cross-call byte cache or native writes.
@@ -1267,6 +1356,18 @@ function C4Pool.discover(roots)
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
     local native_wanted=C4Native and cfg.enabled and cfg.c4_native_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    local idle_wanted=C4Idle and cfg.enabled and cfg.c4_idle_batch and
+        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    if C4Idle then
+        if C4Idle.active>0 and not idle_wanted then
+            C4Idle.restore();log('C4 idle batch: disabled; original suspend restored')
+        end
+        C4Idle.active=0
+        for target,record in pairs(C4Idle.records)do
+            if rawget(target,'suspend')==record.replacement then C4Idle.active=C4Idle.active+1
+            else C4Idle.records[target]=nil;C4Pool.attempts=0 end
+        end
+    end
     if C4Native then
         if C4Native.active>0 and not native_wanted then
             C4Native.restore();log('C4 native batch: disabled; original verifier restored')
@@ -1294,7 +1395,7 @@ function C4Pool.discover(roots)
        is_excluded('mods/etxp/c4_boundary_probe',excludes) then
         if C4Pool.active>0 then C4Pool.restore();log('C4 read pool: disabled; original reader restored') end
         C4Pool.attempts=0
-        if not batch_wanted and not context_wanted and not native_wanted then return end
+        if not batch_wanted and not context_wanted and not native_wanted and not idle_wanted then return end
     end
     for _,record in pairs(C4Pool.records)do
         if record.profiling~=(not not cfg.c4_read_profile) or
@@ -1310,7 +1411,8 @@ function C4Pool.discover(roots)
     if ((not pool_wanted or C4Pool.active>0) and
         (not batch_wanted or C4Batch and C4Batch.active>0) and
         (not context_wanted or C4Context.active>0) and
-        (not native_wanted or C4Native.active>0)) or C4Pool.attempts>=8 then return end
+        (not native_wanted or C4Native.active>0) and
+        (not idle_wanted or C4Idle.active>0)) or C4Pool.attempts>=8 then return end
     C4Pool.attempts=C4Pool.attempts+1
     local pending,seen={},{}
     local function push(value)
@@ -1332,13 +1434,15 @@ function C4Pool.discover(roots)
                 local name,next_=debug.getupvalue(value,i)
                 if not name then break end
                 if is_c4 then
+                    if idle_wanted and name=='auto_reload' then C4Idle.attach(next_)end
                     if native_wanted then C4Native.attach(next_)end
                     if name=='AimInputState' and C4Batch and batch_wanted then C4Batch.attach(next_)end
                     if (name=='ContextReader' or name=='reader') and context_wanted then C4Context.attach(next_)end
                     if name=='api' and C4Pool.attach(next_) and
                        (not batch_wanted or C4Batch and C4Batch.active>0) and
                        (not context_wanted or C4Context.active>0) and
-                       (not native_wanted or C4Native.active>0) then return end
+                       (not native_wanted or C4Native.active>0) and
+                       (not idle_wanted or C4Idle.active>0) then return end
                     if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
                 elseif type(next_)=='function' and
                        (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
@@ -1348,10 +1452,12 @@ function C4Pool.discover(roots)
             end
         elseif getmetatable(value)==nil then
             if native_wanted then C4Native.attach(value)end
+            if idle_wanted then C4Idle.attach(value)end
             if context_wanted then C4Context.attach(value)end
             if C4Pool.attach(value) and (not batch_wanted or C4Batch and C4Batch.active>0) and
                        (not context_wanted or C4Context.active>0) and
-                       (not native_wanted or C4Native.active>0) then return end
+                       (not native_wanted or C4Native.active>0) and
+                       (not idle_wanted or C4Idle.active>0) then return end
             local count=0
             for _,next_ in next,value do
                 count=count+1;if count>64 then break end
@@ -1360,6 +1466,7 @@ function C4Pool.discover(roots)
         end
     end
     if C4Pool.attempts==8 then
+        if idle_wanted and C4Idle.active==0 then log('C4 idle batch: no supported original suspend found; unchanged')end
         if native_wanted and C4Native.active==0 then log('C4 native batch: no supported original verifier found; unchanged')end
         if pool_wanted and C4Pool.active==0 then log('C4 read pool: no supported reader found; no changes made')end
         if context_wanted and C4Context.active==0 then
@@ -1945,6 +2052,8 @@ local function provision_tools()
     / 上下文校验分块测试，默认no。每项仍校验新数据；大读取失败回退。
     Native actions, input policy and validation limits are preserved.
     / 保留原生动作、输入策略及校验限制。切换可热生效，不是稳定版保证。
+  c4_idle_batch=yes/no     candidate idle auto-reload read gate (default no)
+                          空闲自动装填读取门控；有待恢复状态时保留完整处理
   c4_cpu_profile=yes/no    45-second CPU diagnosis only (default no)
     / CPU短时诊断，默认关闭，45秒自动停止。诊断期间帧率不作为验收结果。
   exclude=FRAG,...      never manage these mods / 排除托管

@@ -254,3 +254,22 @@ optimizations remain unchanged.
 CPU sampler controls and real samples were checked in an independent state using
 the game's Lua library. Mission data is still needed. No third-party mod files
 or configuration files are modified.
+
+# 3.0.33 idle read candidate / 空闲读取候选
+
+`c4_idle_batch=yes` optionally removes the read-only auto-reload snapshot from
+C4 1.11's suspended path when passenger reload recovery has no pending state.
+Cancellation and state reset still run. Pending recovery and changed collaborators
+use the original path. Exact function fingerprints restrict the adapter to supported
+implementations; option/global disable and exclusions restore the original method.
+The default is `no`. It does not throttle the entire C4 callback, cache native data
+across frames, or modify C4 files. Active C4 action reads remain unchanged.
+
+开启 `c4_idle_batch=yes` 后，仅在没有待恢复状态时省去挂起自动装填的冗余采集；
+取消、重置以及待恢复处理保留。默认关闭，可热关闭或通过排除名单恢复原实现。
+这是候选版本，主要针对未持 C4 时的两次读取，不能据此声称持 C4 掉帧已解决。
+
+Original AutoReload/PassengerReloadRecovery replay, function/state replacement,
+hot disable/discovery and full Smooth callback checks passed in independent modern
+LuaJIT and game Lua DLL states. The private reproduction and game evidence are kept
+in the parent workspace. Actual 3.0.33 mission performance/actions are pending.
