@@ -24,8 +24,11 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.21' then return old end
-local M={version='3.0.21',status='starting'}
+if old and old.version=='3.0.22' then return old end
+if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
+    pcall(old.c4_read_pool.restore)
+end
+local M={version='3.0.22',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -92,7 +95,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,ui_mods='',scanners='',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -125,6 +128,8 @@ local function conf()
                 w:write('enabled=yes\n')
                 w:write('# adaptive skip only kicks in above busy_ms per chain call (throttle=no to disable)\n')
                 w:write('throttle=auto\nprofile=yes\n')
+                w:write('# candidate: reuse C4 native read buffers, never cache memory or skip input\n')
+                w:write('c4_read_pool=yes\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -203,6 +208,8 @@ local function conf()
         if v then defaults.profile=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*peer_suspend%s*=%s*(%a+)%s*$')
         if v then defaults.peer_suspend=(v=='yes' or v=='true' or v=='on') end
+        v=line:match('^%s*c4_read_pool%s*=%s*(%a+)%s*$')
+        if v then defaults.c4_read_pool=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
                              'writer_release_s','writer_stagger_s',
@@ -370,6 +377,137 @@ local frames,calls,skipped=0,0,0
 local dt_window=0              -- max dt seen in the current 300-frame window
 local cfg=conf()
 local excludes=excluded_list(cfg.exclude or '')
+
+-- BEGIN C4 READ POOL
+-- Optional Smooth-owned runtime adapter for the measured C4 1.11 reader.
+-- No global FFI proxy, memory cache, native write, guard bypass, or tick skip.
+-- The exact original bytecode must match; unfamiliar versions stay untouched.
+local C4Pool={records={},attempts=0,active=0}
+M.c4_read_pool=C4Pool
+local function c4_reader_signature(fn)
+    local ok,blob=pcall(string.dump,fn,true)
+    if not ok or #blob~=420 then return false end
+    local a,b=1,0
+    for i=1,#blob do a=(a+blob:byte(i))%65521;b=(b+a)%65521 end
+    return b*65536+a==2664974623
+end
+function C4Pool.make_reader(ffi,rpm,process)
+    -- ReadProcessMemory cannot call back into Lua. Each VM is synchronous;
+    -- these two private buffers are therefore reused only after a call returns.
+    local out,count=ffi.new('uint8_t[4096]'),ffi.new('size_t[1]')
+    local cast,string_,number=ffi.cast,ffi.string,tonumber
+    local calls=0
+    local function pooled(address,size)
+        assert(type(address)=='number' and address>=65536 and address+size<0x800000000000,'bad_read_address')
+        assert(size>0 and size<=4096,'read_size_limit')
+        count[0]=0
+        calls=calls+1
+        if rpm(process,cast('const void *',address),out,size,count)==0 or
+           number(count[0])~=size then return nil end
+        return string_(out,size)
+    end
+    return pooled,function()return calls end
+end
+function C4Pool.attach(api)
+    if type(api)~='table' or getmetatable(api)~=nil then return false end
+    local existing=C4Pool.records[api]
+    if existing and rawget(api,'read')==existing.pooled then return true end
+    if not cfg.enabled or not cfg.c4_read_pool then return false end
+    local original=rawget(api,'read')
+    if type(original)~='function' or
+       function_chunk(original)~='mods/etxp/c4_boundary_probe' or
+       is_excluded('mods/etxp/c4_boundary_probe',excludes) or
+       not c4_reader_signature(original) then return false end
+    local captured={}
+    for i=1,8 do
+        local name,value=debug.getupvalue(original,i)
+        if not name then break end
+        captured[name]=value
+    end
+    local ffi,k,process=captured.ffi,captured.k,captured.process
+    if ffi~=require('ffi') or ffi.os~='Windows' or not ffi.abi('64bit') or
+       k==nil or type(process)~='cdata' then return false end
+    local rpm=k.ReadProcessMemory
+    if type(rpm)~='cdata' then return false end
+    local pooled,calls=C4Pool.make_reader(ffi,rpm,process)
+    local record={original=original,pooled=pooled,calls=calls}
+    C4Pool.records[api]=record
+    C4Pool.last_original=original
+    rawset(api,'read',pooled)
+    C4Pool.active=0
+    for _ in pairs(C4Pool.records) do C4Pool.active=C4Pool.active+1 end
+    log('C4 read pool: active (verified 1.11 reader; live reads and frame callbacks preserved)')
+    return true
+end
+function C4Pool.restore()
+    for api,record in pairs(C4Pool.records) do
+        -- Never overwrite a replacement installed later by C4 or another mod.
+        if rawget(api,'read')==record.pooled then rawset(api,'read',record.original) end
+        C4Pool.records[api]=nil
+    end
+    C4Pool.active=0
+end
+function C4Pool.reads()
+    local total=0
+    for api,record in pairs(C4Pool.records) do
+        if rawget(api,'read')==record.pooled then total=total+record.calls() end
+    end
+    return total
+end
+function C4Pool.discover(roots)
+    if not cfg.enabled or not cfg.c4_read_pool or
+       is_excluded('mods/etxp/c4_boundary_probe',excludes) then
+        if C4Pool.active>0 then C4Pool.restore();log('C4 read pool: disabled; original reader restored') end
+        C4Pool.attempts=0
+        return
+    end
+    C4Pool.active=0
+    for api,record in pairs(C4Pool.records) do
+        if rawget(api,'read')==record.pooled then C4Pool.active=C4Pool.active+1
+        else C4Pool.records[api]=nil end
+    end
+    if C4Pool.active>0 or C4Pool.attempts>=8 then return end
+    C4Pool.attempts=C4Pool.attempts+1
+    local pending,seen={},{}
+    local function push(value)
+        local kind=type(value)
+        if (kind=='function' or kind=='table') and not seen[value] and
+           value~=_G and value~=package and value~=M and
+           value~=rawget(_G,'stingray') and #pending<2048 then
+            seen[value]=true;pending[#pending+1]=value
+        end
+    end
+    for _,root in ipairs(roots) do push(root) end
+    local at=1
+    while at<=#pending do
+        local value=pending[at];at=at+1
+        if type(value)=='function' then
+            local own_chunk=function_chunk(value)
+            local is_c4=own_chunk=='mods/etxp/c4_boundary_probe'
+            for i=1,64 do
+                local name,next_=debug.getupvalue(value,i)
+                if not name then break end
+                if is_c4 then
+                    if name=='api' and C4Pool.attach(next_) then return end
+                    if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
+                elseif type(next_)=='function' and
+                       (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
+                        name=='previous_update' or name=='original_update' or name=='next_update') then
+                    push(next_)
+                end
+            end
+        elseif getmetatable(value)==nil then
+            if C4Pool.attach(value) then return end
+            local count=0
+            for _,next_ in next,value do
+                count=count+1;if count>64 then break end
+                push(next_)
+            end
+        end
+    end
+    if C4Pool.attempts==8 then log('C4 read pool: no supported reader found; no changes made') end
+end
+-- END C4 READ POOL
 
 -- ===== writer hold: splice FFI writer mods off the chain ==============
 -- The 0x66d26c crash family: dsh/codex FFI mods write into engine tables
@@ -874,6 +1012,11 @@ local function provision_tools()
   Edit config.txt in this folder; changes hot-apply within 10 seconds.
   / 编辑本文件夹里的 config.txt，10 秒内热生效。
   enabled=yes/no        master switch / 总开关
+  c4_read_pool=yes/no   candidate C4 read-buffer reuse / 测试版C4读取缓冲复用
+    Uses live reads on every call; preserves C4 input, guards and charge tracking.
+    / 每次仍读取最新内存；保留C4输入、校验和炸药跟踪。
+    Set no and restart to compare with the original reader; no third-party files change.
+    / 改为no并重启可对照原版读取；不修改其他作者的安装文件。
   exclude=FRAG,...      never manage these mods / 排除托管
   writers=FRAG,...      writer mods held at boot / 开机扣留的写入器
   writer_release_s=10   seconds before first release / 首个放行延时
@@ -1093,6 +1236,10 @@ wrapper=function(...)
         local ok,err=pcall(wh_full_walk)
         if not ok then log('writer hold: walk ERROR: '..tostring(err)) end
     end
+    if frames==1 or frames%300==0 then
+        local ok,err=pcall(C4Pool.discover,{rawget(_G,'update'),head_above,WH.entry,base_prev})
+        if not ok then log('C4 read pool: setup rejected: '..tostring(err)) end
+    end
     local wrs=cfg.writer_release_s or 0
     if wrs>0 and os.clock()-installed_at>=wrs then pcall(wh_release_step) end
     -- engine-pin rollback: we adopted the head but the engine keeps calling
@@ -1195,6 +1342,7 @@ wrapper=function(...)
         if not M.tools_ready and tool_attempts<6 then provision_tools() end
         cfg=conf()
         excludes=excluded_list(cfg.exclude or '')
+        pcall(C4Pool.discover,{rawget(_G,'update'),head_above,WH.entry,base_prev})
         M.excluded_below=M.find_excluded_below()
         pcall(M.frag_check)
         if not peer_active and type(rawget(_G,'MDL'))=='table' then
@@ -1364,6 +1512,7 @@ wrapper=function(...)
     end
 
     if frames%1800==0 then
+        if C4Pool.active>0 then log('C4 read pool: active='..C4Pool.active..' live_reads='..C4Pool.reads()) end
         if cfg.snapshot then pcall(runtime_snapshot) end
         if cfg.snapshot then pcall(c4_snapshot) end
         local top={}

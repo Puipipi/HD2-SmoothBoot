@@ -1,7 +1,24 @@
 # HD2 SmoothBoot
 
-开发候选：**3.0.21，移除兼容提示弹窗，并将反馈有问题的 LTE 头盔与披风模组加入默认排除名单。**
-Development candidate: **3.0.21 removes the compatibility popup and excludes LTE Helmet and Cape Passives by default. The reported third-party combination has not been validated locally.**
+开发候选：**3.0.22，试验 C4 1.11 的原生读取缓冲复用；实际游戏功能与整体收益仍待用户验收。**
+Development candidate: **3.0.22 trials native read-buffer reuse for C4 1.11. In-game C4 behavior and overall performance gains await validation.**
+
+Smooth在运行时识别已核对的C4读取函数，仅为这项读取分配一次私有缓冲。
+每次仍调用ReadProcessMemory读取最新数据，保留地址/长度校验及失败返回。
+没有缓存游戏数据、移除C4校验、跳过C4更新或改变按键注册；不修改第三方安装文件。
+无法匹配原始读取函数时不启用适配。手动排除C4或关闭Smooth会恢复原始读取函数。
+
+Windows原生读取对照确认1000次读取的缓冲分配从2000次减少到2次；
+9项读取回归及6种开启/关闭、加载顺序/MDL模拟配置通过。
+这些是离线原生接口与回调测试，不能当成游戏投掷、引爆、Contact模式验收，
+也不能把读取层的收益当成整体帧率收益。既有回调、FFI、工具和排除规则检查通过。
+
+测试包：`dist/HD2-SmoothBoot-3.0.22-candidate.zip`。默认开启本次试验；
+在运行配置目录的`config.txt`加入`c4_read_pool=no`，可关闭并重启做对照。
+同一任务、同一位置、持有C4未投掷时各观察完整60秒窗口，结合更新频率比较开销。
+再检查单个/多个C4投掷引爆、切枪后的原版输入，以及已使用模式的炸药行为。
+
+下面保留3.0.21的兼容修复及历史证据。
 
 评论明确说明 RatInPlat 的 Armor Transmog 正常；问题是同时使用 LTE Helmet and Cape
 Passives 时不能创建自定义头盔/披风变体，已有被动仍存在。因此本次只新增
@@ -17,7 +34,7 @@ Passives 时不能创建自定义头盔/披风变体，已有被动仍存在。�
 性能/defaults检查通过。实机验证范围和证据见项目交接文档；未安装评论中的完整组合，
 不能称已验证“创建变体”恢复，也不能称所有第三方功能兼容。
 
-当前直接导入管理器的安装包：`dist/HD2-SmoothBoot-3.0.21-candidate.zip`。
+上一候选安装包：`dist/HD2-SmoothBoot-3.0.21-candidate.zip`。
 日志收集器的 E 选项可合并精确模组标识到 `exclude=`；已有名单保留。
 此版不承诺任意第三方组合的兼容性或每帧0.05ms开销。
 
