@@ -1,5 +1,32 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.34**：复用 C4 状态校验中相同地址和长度的读取计划，
+减少反复排序和临时分配。缓存最多8种布局，缓存只保存地址、长度和分组，
+每次仍读取最新原生字节；完整比较所有字段，保持预算、失败回退、返回快照
+的独立生命周期和关闭恢复。沿用默认关闭的 `c4_context_batch=yes` 试验开关。
+不修改第三方文件或配置，不跳过 C4 回调或按键/动作。
+
+独立游戏 Lua 库模拟中，固定 C4 布局采集临时分配约减少57%；原生读取次数
+不变。具体耗时记录在项目验证目录，**这是模拟结果，不是实机FPS收益；
+尚未经过游戏验收，不能宣称C4掉帧已经解决。** 新增 idle 适配在当前实机
+配置中已关闭。CPU采样启动/停止会清空JIT编译轨迹，验收必须关闭采样。
+
+Development candidate **3.0.34** reuses immutable address/length read plans for
+identical C4 context layouts. At most eight layouts are retained; no captured
+bytes, readers, guards or callbacks are cached. Every validation still reads
+fresh native data, with complete layout matching, budgets, fallback, independent
+snapshot lifetimes and restore preserved. Uses the existing, default-off
+`c4_context_batch=yes` experimental option. No third-party file/config changes
+or skipped C4 updates, inputs or actions.
+
+In independent game-Lua-library replay, fixed-layout C4 allocation decreased
+about 57%, with native read counts unchanged. **These are simulation results,
+not game FPS measurements; live validation is pending.** The idle adapter is
+off in the current live configuration. Profiling start/stop flush JIT traces;
+performance acceptance must run with profiling off.
+
+以下保留历史候选记录。
+
 当前开发候选 **3.0.32**：成功读取原生校验字节时，不再提前格式化失败消息；
 真正读取失败时仍返回原有地址和错误内容。保留所有新读取、校验和动作。
 沿用默认关闭的 `c4_native_batch=yes`。现代LuaJIT及游戏Lua库对照检查通过，

@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.33' then return old end
+if old and old.version=='3.0.34' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -43,7 +43,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.33',status='starting'}
+local M={version='3.0.34',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -633,15 +633,39 @@ end
 local GuardBatch=(function()
 -- Private validation-read prototype. No cached native bytes or native writes.
 local M={}
+-- Bounded immutable layout metadata only. Neither guards, captured bytes,
+-- readers nor accounting callbacks survive through this shared cache.
+local layouts={}
+function M.clear_plans()layouts={}end
 function M.new(guards,api,account)
-    local plan,refs,sizes,addresses={},{},{},{}
+    local plan,sizes,addresses={},{},{}
     local function rebuild()
-        local sorted={};local total=0
+        local total=0
         assert(#guards<=768,'snapshot_validation_budget')
         for i,g in ipairs(guards)do
             local n=#g.bytes;total=total+n
             assert(n>0 and n<=4096 and total<=32768,'snapshot_validation_budget')
-            refs[i]=g;sizes[i]=n;addresses[i]=g.at
+            sizes[i]=n;addresses[i]=g.at
+        end
+        for slot,layout in ipairs(layouts)do
+            local count=#sizes
+            local matches=#layout.sizes==count and layout.addresses[count]==addresses[count]
+                and layout.sizes[count]==sizes[count]
+            if matches then for i,at in ipairs(addresses)do
+                if layout.addresses[i]~=at or layout.sizes[i]~=sizes[i] then
+                    matches=false;break
+                end
+            end end
+            if matches then
+                plan=layout.plan
+                -- Keep recently used layouts close; the entire cache is <=8.
+                if slot>1 then table.remove(layouts,slot);table.insert(layouts,1,layout)end
+                return
+            end
+        end
+        local sorted={}
+        for i,g in ipairs(guards)do
+            local n=sizes[i]
             sorted[i]={at=g.at,last=g.at+n,index=i}
         end
         table.sort(sorted,function(a,b)return a.at<b.at end)
@@ -660,13 +684,15 @@ function M.new(guards,api,account)
         if bytes+total>32768 or #proposed+#guards>768 or bytes>total*2 then
             for _,g in ipairs(sorted)do plan[g.index]={at=g.at,last=g.last}end
         end
+        table.insert(layouts,1,{addresses=addresses,sizes=sizes,plan=plan})
+        if #layouts>8 then layouts[9]=nil end
     end
     return function()
-        local valid=#refs==#guards
+        local valid=#sizes==#guards
         if valid then for i,g in ipairs(guards)do
-            if refs[i]~=g or sizes[i]~=#g.bytes or addresses[i]~=g.at then valid=false;break end
+            if sizes[i]~=#g.bytes or addresses[i]~=g.at then valid=false;break end
         end end
-        if not valid then refs,sizes,addresses={},{},{};rebuild()end
+        if not valid then sizes,addresses={},{};rebuild()end
         local data={}
         for i,g in ipairs(guards)do
             local p=plan[i];local b=data[p]
@@ -968,6 +994,7 @@ function C4Context.restore()
         C4Context.records[target]=nil
     end
     C4Context.active=0
+    GuardBatch.clear_plans()
 end
 -- END C4 CONTEXT BATCH
 
