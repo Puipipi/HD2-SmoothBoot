@@ -9,7 +9,11 @@
 
 实机 3.0.25 已观察到瞄准按键扫描/复核占大量读取；离线相同按键表对照
 原生调用由 2744 次减少为 171 次。游戏原始 Lua 库、数据突变、失败回退及
-自动接入/关闭还原检查通过。**实机帧率和 C4 功能仍待验证，不标为稳定版。**
+自动接入/关闭还原检查通过。2026-10-03 实机日志已确认接入，用户确认
+投掷、引爆均正常。诊断关闭后，用户报告 C4 站立与主武器站立均约 162 FPS，
+C4 跑动约 150–155，切回游戏时曾短暂约 130 后逐步恢复，仍有波动。
+期间发生过死亡/复活，部分开关对照混有状态变化，不能独立归因或承诺固定收益。
+**移动时的性能问题未完全解决，仍为候选版。**
 
 3.0.26 adds an **opt-in** C4 binding-table batch reader: `c4_input_batch=yes`.
 Only verified original bytecode is supported. Each validation reads fresh data and
@@ -17,7 +21,12 @@ compares every original guard; failed larger reads fall back to individual reads
 It keeps actions, input policy and frame callbacks, and restores the original reader
 when disabled or excluded. No third-party installed files are modified.
 Offline native calls fell from 2744 to 171 for the same fixture; this is not an
-in-game FPS result. In-game performance and C4 actions await validation.
+in-game FPS result. In-game attachment was confirmed on 2026-10-03, and the
+tester confirmed throw and detonate both work. With diagnostics off, reported
+standing FPS matched the primary weapon at about 162; moving with C4 was about
+150–155, with a temporary drop after refocusing and subsequent recovery.
+Death/respawn confounded some comparisons. Moving performance remains unresolved;
+this is still a candidate, not a stable release or a guaranteed FPS gain.
 
 The AimInputState contract is adapted from the MIT-licensed
 [HD2 C4 Quick Actions](https://github.com/etxp/HD2-C4-Quick-Actions).
