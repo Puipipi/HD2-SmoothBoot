@@ -24,11 +24,11 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.23' then return old end
+if old and old.version=='3.0.24' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
-local M={version='3.0.23',status='starting'}
+local M={version='3.0.24',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -418,7 +418,7 @@ function C4Pool.attach(api)
     if not cfg.enabled or not cfg.c4_read_pool then return false end
     local original=rawget(api,'read')
     if type(original)~='function' or
-       function_chunk(original)~='mods/etxp/c4_boundary_probe' or
+       function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' or
        is_excluded('mods/etxp/c4_boundary_probe',excludes) or
        not c4_reader_signature(original) then return false end
     local captured={}
@@ -486,7 +486,7 @@ function C4Pool.discover(roots)
         local value=pending[at];at=at+1
         if type(value)=='function' then
             local own_chunk=function_chunk(value)
-            local is_c4=own_chunk=='mods/etxp/c4_boundary_probe'
+            local is_c4=own_chunk:gsub('%.lua$','')=='mods/etxp/c4_boundary_probe'
             for i=1,64 do
                 local name,next_=debug.getupvalue(value,i)
                 if not name then break end

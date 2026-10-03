@@ -1,11 +1,13 @@
 # HD2 SmoothBoot
 
-开发候选：**3.0.23，试验 C4 1.11 的原生读取缓冲复用；实际游戏功能与整体收益仍待用户验收。**
-Development candidate: **3.0.23 trials native read-buffer reuse for C4 1.11. In-game C4 behavior and overall performance gains await validation.**
+开发候选：**3.0.24，试验 C4 1.11 的原生读取缓冲复用；实际游戏功能与整体收益仍待用户验收。**
+Development candidate: **3.0.24 trials native read-buffer reuse for C4 1.11. In-game C4 behavior and overall performance gains await validation.**
 
 3.0.22实机日志显示没有匹配到读取函数，优化没有启用。原因是游戏自带LuaJIT
 2.1 alpha与离线测试所用新版LuaJIT的字节码指纹不同。3.0.23已在游戏原始
 lua51.dll的独立测试状态中复现并修正；该测试没有访问游戏进程，任务内收益待复测。
+3.0.23实机仍未启用：实际加载路径带.lua后缀，识别没有接受。
+3.0.24修正路径形式，并使用实际路径和游戏原始Lua库重跑检查。
 
 Smooth在运行时识别已核对的C4读取函数，仅为这项读取分配一次私有缓冲。
 每次仍调用ReadProcessMemory读取最新数据，保留地址/长度校验及失败返回。
@@ -17,7 +19,7 @@ Windows原生读取对照确认1000次读取的缓冲分配从2000次减少到2�
 这些是离线原生接口与回调测试，不能当成游戏投掷、引爆、Contact模式验收，
 也不能把读取层的收益当成整体帧率收益。既有回调、FFI、工具和排除规则检查通过。
 
-测试包：`dist/HD2-SmoothBoot-3.0.23-candidate.zip`。默认开启本次试验；
+测试包：`dist/HD2-SmoothBoot-3.0.24-candidate.zip`。默认开启本次试验；
 在运行配置目录的`config.txt`加入`c4_read_pool=no`，可关闭并重启做对照。
 同一任务、同一位置、持有C4未投掷时各观察完整60秒窗口，结合更新频率比较开销。
 再检查单个/多个C4投掷引爆、切枪后的原版输入，以及已使用模式的炸药行为。
