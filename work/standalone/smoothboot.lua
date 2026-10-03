@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.30' then return old end
+if old and old.version=='3.0.31' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -40,7 +40,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.30',status='starting'}
+local M={version='3.0.31',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -488,33 +488,37 @@ function C4Batch.make_reader(D,R)
     local bit=require('bit')
     return function(api,game,base,codes,native,spec)
         spec=spec or {action=D.input_aim_action,code=D.input_aim_code,index=8}
-        local guards={}
+        -- Arrays belong to this invocation: returned same() closures must keep
+        -- their own bytes even after another snapshot is created.
+        local guard_at,guard_bytes,guard_blocks,guard_count={},{},{},0
         local function record(at,n,bytes,block)
             assert(type(at)=='number' and at>=65536 and at+n<0x800000000000 and
-                n>0 and n<=512 and #guards<1000,'aim_read_bounds')
+                n>0 and n<=512 and guard_count<1000,'aim_read_bounds')
             assert(bytes,'aim_read_unavailable');assert(#bytes==n,'aim_short_read')
-            guards[#guards+1]={at,bytes,block};return bytes
+            guard_count=guard_count+1
+            guard_at[guard_count]=at;guard_bytes[guard_count]=bytes;guard_blocks[guard_count]=block
+            return bytes
         end
         local function read(at,n)
             assert(type(at)=='number' and at>=65536 and at+n<0x800000000000 and
-                n>0 and n<=512 and #guards<1000,'aim_read_bounds')
+                n>0 and n<=512 and guard_count<1000,'aim_read_bounds')
             return record(at,n,api.read(at,n))
         end
         local function ptr(at)return assert(api.pointer(read(at,8)),'aim_pointer')end
         local function same()
             local blocks={}
-            for _,g in ipairs(guards)do
+            for i=1,guard_count do
+                local at,expected,block=guard_at[i],guard_bytes[i],guard_blocks[i]
                 local bytes
-                if g[3] then
-                    local block=g[3]
+                if block then
                     local data=blocks[block.at]
                     if data==nil then
                         data=api.read(block.at,block.size) or false;blocks[block.at]=data
                     end
-                    if data then local offset=g[1]-block.at;bytes=data:sub(offset+1,offset+#g[2])
-                    else bytes=api.read(g[1],#g[2])end
-                else bytes=api.read(g[1],#g[2])end
-                if bytes~=g[2] then return false end
+                    if data then local offset=at-block.at;bytes=data:sub(offset+1,offset+#expected)
+                    else bytes=api.read(at,#expected)end
+                else bytes=api.read(at,#expected)end
+                if bytes~=expected then return false end
             end
             return true
         end

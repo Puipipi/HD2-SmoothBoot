@@ -1,5 +1,23 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.31**：C4 按键扫描用每次调用独有的校验数组代替逐字段
+临时表，保留每次新读取、原有校验顺序、失败回退和返回结果的独立生命周期。
+沿用默认关闭的 `c4_input_batch=yes` 开关，不修改第三方文件或配置。
+独立进程中，现代 LuaJIT 的每次扫描分配约从97 KB降到49 KB；游戏自带
+Lua库中约从70 KB降到39 KB。**这不是实机FPS收益，尚未部署或游戏验收。**
+3.0.30同任务关闭/开启/关闭对照的C4帧率未随开关稳定重复，不能宣称修复。
+
+Development candidate **3.0.31** replaces per-field input guard tables with
+invocation-local arrays. Fresh reads, validation order, fallback and independent
+returned snapshot lifetimes remain intact. The existing `c4_input_batch=yes`
+option remains off by default. Third-party files and configuration are untouched.
+Independent allocation tests measured about 97→49 KB per scan with modern LuaJIT
+and 70→39 KB with the game's Lua library. **These are not in-game FPS results;
+deployment and mission validation remain pending.** The 3.0.30 same-session
+OFF/ON/OFF trial did not establish a repeatable FPS benefit.
+
+以下保留历史候选记录。
+
 当前开发候选 **3.0.30**：在已核对的 C4 1.11 原生校验读取中，单块读取
 直接返回本次新读出的字符串，省去每次创建临时表和拼接；超过4096字节仍用
 原来的分块读取。原字段校验、失败回退、动作及原始上值变化继续保留。

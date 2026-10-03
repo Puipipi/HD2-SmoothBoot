@@ -50,6 +50,30 @@ class InputBatch(unittest.TestCase):
     def test_every_invocation_reads_fresh_mapping_bytes(self):
         self.rt.execute('p=read(api,game,base,codes,native);w(buckets,220*328+8,999);q=read(api,game,base,codes,native);assert(p.aim~=q.aim)')
 
+    def test_scan_allocation_stays_below_seventy_kb_per_call(self):
+        # JIT off and GC stopped isolate allocation, not wall time or game FPS.
+        self.rt.execute(r'''
+            jit.off();collectgarbage('collect');collectgarbage('stop')
+            local before=collectgarbage('count')
+            for i=1,50 do
+                local result=read(api,game,base,codes,native)
+                assert(result.same())
+            end
+            allocation_kb_per_call=(collectgarbage('count')-before)/50
+            collectgarbage('restart')
+        ''')
+        self.assertLess(self.rt.globals().allocation_kb_per_call, 70)
+
+    def test_old_validation_closures_keep_their_own_snapshot(self):
+        self.rt.execute(r'''
+            local first=read(api,game,base,codes,native)
+            w(buckets,220*328+8,999)
+            local second=read(api,game,base,codes,native)
+            assert(not first.same() and second.same())
+            w(buckets,220*328+8,11)
+            assert(first.same() and not second.same())
+        ''')
+
     def test_final_validation_rejects_changes_during_native_query(self):
         self.rt.execute(r'''
             native.input_mapping=function()w(buckets,245*328,99);return buckets+220*328+8 end
