@@ -1,5 +1,30 @@
 # HD2 SmoothBoot
 
+3.0.26 增加 **默认关闭的 C4 按键表分块读取候选**，需使用
+`c4_input_batch=yes` 启用。仅接入字节码身份已核对的原始 AimInputState；
+其他版本不接入。读取按 12 个表项一块合并，每次校验读取新数据并比较原有的
+每个保护字段，大块读取失败时回退到小读取。不跨帧缓存数据，不移除安全校验，
+不跳过 C4 更新，不改变原生动作、按键路由或抑制策略。
+关闭 Smooth、排除 C4 或关闭此选项会恢复原函数；第三方安装文件不修改。
+
+实机 3.0.25 已观察到瞄准按键扫描/复核占大量读取；离线相同按键表对照
+原生调用由 2744 次减少为 171 次。游戏原始 Lua 库、数据突变、失败回退及
+自动接入/关闭还原检查通过。**实机帧率和 C4 功能仍待验证，不标为稳定版。**
+
+3.0.26 adds an **opt-in** C4 binding-table batch reader: `c4_input_batch=yes`.
+Only verified original bytecode is supported. Each validation reads fresh data and
+compares every original guard; failed larger reads fall back to individual reads.
+It keeps actions, input policy and frame callbacks, and restores the original reader
+when disabled or excluded. No third-party installed files are modified.
+Offline native calls fell from 2744 to 171 for the same fixture; this is not an
+in-game FPS result. In-game performance and C4 actions await validation.
+
+The AimInputState contract is adapted from the MIT-licensed
+[HD2 C4 Quick Actions](https://github.com/etxp/HD2-C4-Quick-Actions).
+Its copyright and permission notice are retained in the runtime source.
+
+以下为 3.0.25 及此前的诊断记录。
+
 3.0.25 为 C4 掉帧诊断候选，尚未解决持有 C4 跑动时的帧率下降。
 同一对局关闭 3.0.24 的缓冲复用后，用户仍复现相同现象。
 新增 `c4_read_profile=yes` 临时采样，默认关闭；每 509 次读取采样一次调用位置，

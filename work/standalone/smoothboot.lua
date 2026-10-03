@@ -24,11 +24,14 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.25' then return old end
+if old and old.version=='3.0.26' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
-local M={version='3.0.25',status='starting'}
+if old and type(old.c4_input_batch)=='table' and type(old.c4_input_batch.restore)=='function' then
+    pcall(old.c4_input_batch.restore)
+end
+local M={version='3.0.26',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -95,7 +98,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,ui_mods='',scanners='',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -130,6 +133,7 @@ local function conf()
                 w:write('throttle=auto\nprofile=yes\n')
                 w:write('# candidate: reuse C4 native read buffers, never cache memory or skip input\n')
                 w:write('c4_read_pool=yes\n')
+                w:write('c4_read_profile=no\nc4_input_batch=no\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -212,6 +216,8 @@ local function conf()
         if v then defaults.c4_read_pool=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*c4_read_profile%s*=%s*(%a+)%s*$')
         if v then defaults.c4_read_profile=(v=='yes' or v=='true' or v=='on') end
+        v=line:match('^%s*c4_input_batch%s*=%s*(%a+)%s*$')
+        if v then defaults.c4_input_batch=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
                              'writer_release_s','writer_stagger_s',
@@ -380,6 +386,222 @@ local dt_window=0              -- max dt seen in the current 300-frame window
 local cfg=conf()
 local excludes=excluded_list(cfg.exclude or '')
 
+-- BEGIN C4 INPUT BATCH
+-- AimInputState contract adapted from HD2 C4 Quick Actions, MIT license.
+-- Copyright (c) 2026 HD2 C4 Quick Actions contributors
+-- Permission is hereby granted, free of charge, to any person obtaining a copy
+-- of this software and associated documentation files (the "Software"), to deal
+-- in the Software without restriction, including without limitation the rights
+-- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+-- copies of the Software, and to permit persons to whom the Software is
+-- furnished to do so, subject to the following conditions:
+-- The above copyright notice and this permission notice shall be included in all
+-- copies or substantial portions of the Software.
+-- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+-- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+-- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+-- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+-- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+-- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+-- SOFTWARE.
+-- Smooth-owned optional adapter for the measured binding-key scan. Every
+-- validation pass reads fresh bytes and compares every original guard.
+local C4Batch={records={},active=0}
+M.c4_input_batch=C4Batch
+function C4Batch.signature(fn)
+    local ok,blob=pcall(string.dump,fn,true)
+    if not ok or #blob>8192 or blob:sub(1,4)~='\27LJ\2' then return nil end
+    local function canonical()
+        local at,parts=5,{}
+        local function take(n)
+            assert(n>=0 and at+n-1<=#blob,'dump_bounds')
+            local value=blob:sub(at,at+n-1);at=at+n;return value
+        end
+        local function num()
+            local start,value,mult=at,0,1
+            for _=1,5 do
+                local b=assert(blob:byte(at));at=at+1
+                value=value+(b%128)*mult
+                if b<128 then return value,blob:sub(start,at-1)end
+                mult=mult*128
+            end
+            error('dump_uleb')
+        end
+        local flags=num();assert(flags%4>=2 and flags%2==0 and flags<16,'dump_flags')
+        parts[1]=blob:sub(1,at-1)
+        local function addnum()local value,raw=num();parts[#parts+1]=raw;return value end
+        local function tablevalue()
+            local kind,raw=num()
+            if kind>=5 then return raw..take(kind-5)end
+            if kind==3 then local _,bytes=num();return raw..bytes end
+            if kind==4 then local _,a=num();local _,b=num();return raw..a..b end
+            assert(kind<=2,'dump_table_kind');return raw
+        end
+        while true do
+            local length=addnum()
+            if length==0 then assert(at==#blob+1);break end
+            local last=at+length
+            local header=take(4);parts[#parts+1]=header
+            local kgc=addnum();addnum();local bc=addnum()
+            parts[#parts+1]=take(bc*4+header:byte(4)*2)
+            for _=1,kgc do
+                local kind=addnum()
+                if kind>=5 then parts[#parts+1]=take(kind-5)
+                elseif kind==1 then
+                    local array=addnum();local hash=addnum()
+                    for _=1,array do parts[#parts+1]=tablevalue()end
+                    local entries={}
+                    for i=1,hash do entries[i]=tablevalue()..tablevalue()end
+                    table.sort(entries)
+                    for _,entry in ipairs(entries)do parts[#parts+1]=entry end
+                elseif kind>1 then
+                    assert(kind<=4,'dump_constant_kind');addnum();addnum()
+                    if kind==4 then addnum();addnum()end
+                end
+            end
+            parts[#parts+1]=take(last-at)
+        end
+        local normalized=table.concat(parts)
+        local a,b=1,0
+        for i=1,#normalized do a=(a+normalized:byte(i))%65521;b=(b+a)%65521 end
+        return #normalized,b*65536+a
+    end
+    local good,length,hash=pcall(canonical)
+    if good then return length,hash end
+end
+function C4Batch.make_reader(D,R)
+    local bit=require('bit')
+    return function(api,game,base,codes,native,spec)
+        spec=spec or {action=D.input_aim_action,code=D.input_aim_code,index=8}
+        local guards={}
+        local function record(at,n,bytes,block)
+            assert(type(at)=='number' and at>=65536 and at+n<0x800000000000 and
+                n>0 and n<=512 and #guards<1000,'aim_read_bounds')
+            assert(bytes,'aim_read_unavailable');assert(#bytes==n,'aim_short_read')
+            guards[#guards+1]={at,bytes,block};return bytes
+        end
+        local function read(at,n)
+            assert(type(at)=='number' and at>=65536 and at+n<0x800000000000 and
+                n>0 and n<=512 and #guards<1000,'aim_read_bounds')
+            return record(at,n,api.read(at,n))
+        end
+        local function ptr(at)return assert(api.pointer(read(at,8)),'aim_pointer')end
+        local function same()
+            local blocks={}
+            for _,g in ipairs(guards)do
+                local bytes
+                if g[3] then
+                    local block=g[3]
+                    local data=blocks[block.at]
+                    if data==nil then
+                        data=api.read(block.at,block.size) or false;blocks[block.at]=data
+                    end
+                    if data then local offset=g[1]-block.at;bytes=data:sub(offset+1,offset+#g[2])
+                    else bytes=api.read(g[1],#g[2])end
+                else bytes=api.read(g[1],#g[2])end
+                if bytes~=g[2] then return false end
+            end
+            return true
+        end
+        local owner=ptr(game+R.global_input_owner)
+        local count=base.u32(read(owner+D.input_inhibit_count,4),0)
+        assert(count<=D.input_inhibit_capacity,'aim_inhibition_count')
+        local h=read(owner+D.input_inhibit_map,20)
+        local n,empty,mult=base.u32(h,8),base.u32(h,12),base.u32(h,16)
+        assert(n<=1024 and (n==0 or bit.band(n,n-1)==0),'aim_inhibition_map')
+        local index
+        if n>0 then
+            local tableptr=assert(api.pointer(h),'aim_inhibition_pointer');local ended=false
+            for i=0,math.min(n,128)-1 do
+                local bytes=read(tableptr+((base.product_low(spec.code,mult)+i)%n)*8,8)
+                local key=base.u32(bytes,0)
+                if key==spec.code then index=base.u32(bytes,4);ended=true;break end
+                if key==empty then ended=true;break end
+            end
+            assert(ended,'aim_inhibition_probe_limit')
+        end
+        local mask
+        if index and index~=0xffffffff then
+            assert(index<count,'aim_inhibition_index')
+            local address=owner+D.input_inhibit_rows+index*24;local bytes=read(address,24)
+            assert(base.u32(bytes,4)==2 and base.u32(bytes,8)==spec.index,'aim_inhibition_identity')
+            mask={address=address,bytes=bytes,mode=base.u32(bytes,0)}
+        end
+        local result={owner=owner,mask=mask,count=count,same=same}
+        if not codes then assert(same(),'aim_state_changed');return result end
+        local state=read(owner+808+32*(2*97+spec.index),1)
+        assert(state:byte()<=1,'aim_action_state');result.held=state:byte()~=0
+        if spec.fire then assert(same(),'fire_input_snapshot_changed');return result end
+        local bh=read(owner+D.input_bindings,20)
+        local capacity=base.u32(bh,8);assert(capacity==256,'aim_binding_capacity')
+        local buckets=assert(api.pointer(bh),'aim_binding_pointer')
+        local wanted={[spec.code]='aim',[codes.deploy]='deploy',[codes.detonate]='detonate'}
+        assert(wanted[spec.code]=='aim','aim_assignment_collision')
+        local lists={}
+        for code,key in pairs(wanted)do
+            -- Per-code scan buffers are local to this call; no frame cache.
+            local blocks={}
+            for probe=0,capacity-1 do
+                local i=(base.product_low(code,base.u32(bh,16))+probe)%capacity
+                local at=buckets+i*328;local first=math.floor(i/12)*12
+                local block=blocks[first]
+                if not block then
+                    local size=(math.min(12,capacity-first)-1)*328+4
+                    local address=buckets+first*328
+                    assert(type(address)=='number' and address>=65536 and
+                        address+size<0x800000000000,'aim_read_bounds')
+                    block={at=address,size=size,data=api.read(address,size) or false};blocks[first]=block
+                end
+                local bytes
+                if block.data then local offset=at-block.at;bytes=record(at,4,block.data:sub(offset+1,offset+4),block)
+                else bytes=read(at,4)end
+                if base.u32(bytes,0)==code then
+                    local size=base.u32(read(at+4,4),0);assert(size<=16,'aim_binding_count')
+                    local mappings={}
+                    for j=0,size-1 do mappings[#mappings+1]={at=at+8+j*20,bytes=read(at+8+j*20,20)}end
+                    lists[key]=mappings;break
+                end
+            end
+        end
+        assert(lists.aim and lists.deploy and lists.detonate,'aim_binding_missing')
+        assert(same(),'aim_binding_changed')
+        local chosen=native.input_mapping(owner,spec.action)
+        if chosen and chosen~=0 then
+            for _,v in ipairs(lists.aim)do if v.at==chosen then result.aim=v.bytes;break end end
+            assert(result.aim,'aim_selected_mapping_outside_bucket')
+        end
+        result.deploy=lists.deploy;result.detonate=lists.detonate
+        assert(same(),'aim_snapshot_changed');return result
+    end
+end
+function C4Batch.attach(target)
+    if not cfg.enabled or not cfg.c4_input_batch or type(target)~='table' or getmetatable(target) then return false end
+    local original=rawget(target,'read')
+    if type(original)~='function' or function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' or
+       is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
+    local length,hash=C4Batch.signature(original)
+    if not ((length==2920 and hash==3910151087) or (length==2847 and hash==3465483342)) then
+        log('C4 input batch: unsupported fingerprint '..tostring(length)..'/'..tostring(hash)..'; unchanged')
+        return false
+    end
+    local captured={}
+    for i=1,8 do local name,value=debug.getupvalue(original,i);if not name then break end;captured[name]=value end
+    if type(captured.D)~='table' or type(captured.R)~='table' or captured.bit~=require('bit') then return false end
+    local replacement=C4Batch.make_reader(captured.D,captured.R)
+    C4Batch.records[target]={original=original,replacement=replacement}
+    rawset(target,'read',replacement);C4Batch.active=1
+    log('C4 input batch: active (verified original reader; all guards and native actions preserved)')
+    return true
+end
+function C4Batch.restore()
+    for target,record in pairs(C4Batch.records)do
+        if rawget(target,'read')==record.replacement then rawset(target,'read',record.original)end
+        C4Batch.records[target]=nil
+    end
+    C4Batch.active=0
+end
+-- END C4 INPUT BATCH
+
 -- BEGIN C4 READ POOL
 -- Optional Smooth-owned runtime adapter for the measured C4 1.11 reader.
 -- No global FFI proxy, memory cache, native write, guard bypass, or tick skip.
@@ -509,11 +731,18 @@ function C4Pool.reads()
     return total
 end
 function C4Pool.discover(roots)
+    local pool_wanted=cfg.enabled and (cfg.c4_read_pool or cfg.c4_read_profile) and
+        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    local batch_wanted=cfg.enabled and cfg.c4_input_batch and
+        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    if C4Batch and C4Batch.active>0 and not batch_wanted then
+        C4Batch.restore();log('C4 input batch: disabled; original input reader restored')
+    end
     if not cfg.enabled or (not cfg.c4_read_pool and not cfg.c4_read_profile) or
        is_excluded('mods/etxp/c4_boundary_probe',excludes) then
         if C4Pool.active>0 then C4Pool.restore();log('C4 read pool: disabled; original reader restored') end
         C4Pool.attempts=0
-        return
+        if not batch_wanted then return end
     end
     for _,record in pairs(C4Pool.records)do
         if record.profiling~=(not not cfg.c4_read_profile) or
@@ -526,7 +755,8 @@ function C4Pool.discover(roots)
         if rawget(api,'read')==record.pooled then C4Pool.active=C4Pool.active+1
         else C4Pool.records[api]=nil end
     end
-    if C4Pool.active>0 or C4Pool.attempts>=8 then return end
+    if ((not pool_wanted or C4Pool.active>0) and
+        (not batch_wanted or C4Batch and C4Batch.active>0)) or C4Pool.attempts>=8 then return end
     C4Pool.attempts=C4Pool.attempts+1
     local pending,seen={},{}
     local function push(value)
@@ -548,7 +778,9 @@ function C4Pool.discover(roots)
                 local name,next_=debug.getupvalue(value,i)
                 if not name then break end
                 if is_c4 then
-                    if name=='api' and C4Pool.attach(next_) then return end
+                    if name=='AimInputState' and C4Batch and batch_wanted then C4Batch.attach(next_)end
+                    if name=='api' and C4Pool.attach(next_) and
+                       (not batch_wanted or C4Batch and C4Batch.active>0) then return end
                     if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
                 elseif type(next_)=='function' and
                        (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
@@ -557,7 +789,7 @@ function C4Pool.discover(roots)
                 end
             end
         elseif getmetatable(value)==nil then
-            if C4Pool.attach(value) then return end
+            if C4Pool.attach(value) and (not batch_wanted or C4Batch and C4Batch.active>0) then return end
             local count=0
             for _,next_ in next,value do
                 count=count+1;if count>64 then break end
