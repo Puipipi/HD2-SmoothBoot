@@ -24,11 +24,11 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.22' then return old end
+if old and old.version=='3.0.23' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
-local M={version='3.0.22',status='starting'}
+local M={version='3.0.23',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -389,7 +389,10 @@ local function c4_reader_signature(fn)
     if not ok or #blob~=420 then return false end
     local a,b=1,0
     for i=1,#blob do a=(a+blob:byte(i))%65521;b=(b+a)%65521 end
-    return b*65536+a==2664974623
+    local checksum=b*65536+a
+    -- Same original 1.11 source compiled by LuaJIT 2.1 alpha (game DLL)
+    -- or the newer LuaJIT used by the offline regression runner.
+    return checksum==1514359016 or checksum==2664974623
 end
 function C4Pool.make_reader(ffi,rpm,process)
     -- ReadProcessMemory cannot call back into Lua. Each VM is synchronous;
