@@ -52,6 +52,27 @@ end
                         "short=make_short(original);local baseline=allocation(original);local candidate=allocation(short);"
                         "assert(candidate<baseline/2,'short reads still allocate temporary parts tables')")
 
+    def test_success_does_not_format_failure_messages(self):
+        self.rt.execute(r'''
+short=make_short(original)
+local format=string.format;format_calls=0
+string.format=function(...)format_calls=format_calls+1;return format(...)end
+for i=1,1000 do assert(short(64,4):byte(1)==42)end
+string.format=format
+''')
+        self.assertEqual(self.rt.globals().format_calls, 0)
+
+    def test_failed_read_formats_original_address_error_once(self):
+        self.rt.execute(r'''
+short=make_short(original);bad='nil'
+local format=string.format;format_calls=0
+string.format=function(...)format_calls=format_calls+1;return format(...)end
+local ok,why=pcall(short,64,4)
+string.format=format
+assert(not ok and why:find('compat_read_unavailable:40',1,true),tostring(why))
+''')
+        self.assertEqual(self.rt.globals().format_calls, 1)
+
     def test_fresh_bytes_and_large_chunk_contract(self):
         self.rt.execute('short=make_short(original);for _,n in ipairs({1,4,4096,4097,8192})do '
                         'calls=0;local a=original(64,n);local expected=calls;calls=0;'

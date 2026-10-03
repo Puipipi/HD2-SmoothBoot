@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.31' then return old end
+if old and old.version=='3.0.32' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -40,7 +40,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.31',status='starting'}
+local M={version='3.0.32',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -1049,8 +1049,10 @@ function C4Native.make_short_reader(original)
         -- Large guards keep the original multi-chunk reader and its failures.
         if n>4096 then return original(rva,n)end
         assert(rva>=0 and n>0 and rva+n<=0x10000000,'compat_read_bounds')
-        local bytes=assert(api.read(game+rva,n),
-            'compat_read_unavailable:'..string.format('%x',rva))
+        local bytes=api.read(game+rva,n)
+        if not bytes then
+            assert(bytes,'compat_read_unavailable:'..string.format('%x',rva))
+        end
         assert(#bytes==n,'compat_short_read')
         -- Preserve concat's rejection of a later reader returning a table.
         if type(bytes)~='string' then return table.concat({bytes})end

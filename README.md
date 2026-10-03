@@ -1,5 +1,19 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.32**：成功读取原生校验字节时，不再提前格式化失败消息；
+真正读取失败时仍返回原有地址和错误内容。保留所有新读取、校验和动作。
+沿用默认关闭的 `c4_native_batch=yes`。现代LuaJIT及游戏Lua库对照检查通过，
+**尚未部署或实机验证，不能宣称FPS收益或常态开销已解决。**
+
+Development candidate **3.0.32** formats native read failure messages only when
+the read fails. Successful reads avoid unnecessary formatting; original failure
+addresses, fresh reads, guards and actions remain intact. The existing
+`c4_native_batch=yes` option remains off by default. Independent modern and game
+Lua-library contract checks pass. **Deployment and live validation remain pending;
+no FPS or background-cost improvement has been established.**
+
+以下保留历史候选记录。
+
 当前开发候选 **3.0.31**：C4 按键扫描用每次调用独有的校验数组代替逐字段
 临时表，保留每次新读取、原有校验顺序、失败回退和返回结果的独立生命周期。
 沿用默认关闭的 `c4_input_batch=yes` 开关，不修改第三方文件或配置。
