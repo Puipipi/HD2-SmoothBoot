@@ -24,12 +24,15 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.36' then return old end
+if old and old.version=='3.0.37' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
 if old and type(old.c4_input_scope)=='table' and type(old.c4_input_scope.restore)=='function' then
     pcall(old.c4_input_scope.restore)
+end
+if old and type(old.c4_fire_scope)=='table' and type(old.c4_fire_scope.restore)=='function' then
+    pcall(old.c4_fire_scope.restore)
 end
 if old and type(old.c4_input_batch)=='table' and type(old.c4_input_batch.restore)=='function' then
     pcall(old.c4_input_batch.restore)
@@ -49,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.36',status='starting'}
+local M={version='3.0.37',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -730,7 +733,7 @@ return M
 end)()
 local C4Context={records={},active=0,guard_batch=GuardBatch}
 M.c4_context_batch=C4Context
-function C4Context.make_reader(original)
+function C4Context.make_reader(original,omit_templates)
     local R,D
 local ContextReader=(function()
 
@@ -911,6 +914,9 @@ function M.snapshot(api,game,extend)
 
 
 
+    -- Only an exact private read-only fire-maintenance consumer may omit
+    -- diagnostic templates. Ordinary snapshots/actions retain all original reads.
+    if not omit_templates then
     local templates=ptr(owner+D.ability_templates,true)
     local start=0
     for b=8,1,-1 do start=(start*256+weapon:byte(b))%D.ability_capacity end
@@ -933,6 +939,7 @@ function M.snapshot(api,game,extend)
             end
             break
         end
+    end
     end
     if extend then
 
@@ -969,7 +976,7 @@ end)()
     -- No polling, stale layout copies, or replacement of another mod's helpers.
     for i=1,32 do
         local name=debug.getupvalue(replacement,i);if not name then break end
-        if name~='GuardBatch' then
+        if name~='GuardBatch' and name~='omit_templates' then
             local entry=assert(captured[name],'context_upvalue_missing:'..name)
             debug.upvaluejoin(replacement,i,original,entry.index)
         end
@@ -1184,6 +1191,121 @@ function C4UI.restore()
     C4UI.active=0;C4UI.attempts=0
 end
 -- END C4 UI SCOPE
+
+-- BEGIN C4 FIRE SCOPE
+-- Existing identical MUTED leases need no diagnostic ability template table.
+-- Original sync/stop and every new acquisition/write remain authoritative.
+local C4FireScope={records={},active=0,attempts=0}
+M.c4_fire_scope=C4FireScope
+function C4FireScope.attach(target)
+    if not cfg.enabled or not cfg.c4_context_batch or type(target)~='table' or getmetatable(target)or
+        type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes)then return false end
+    local owned=C4FireScope.records[target]
+    if owned then
+        local _,value=debug.getupvalue(owned.sync,owned.slot)
+        if rawget(target,'sync')==owned.sync and value==owned.replacement then return true end
+        return false
+    end
+    local sync=rawget(target,'sync')
+    if type(sync)~='function' or function_chunk(sync):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe'then return false end
+    local n,h=C4Batch.signature(sync)
+    if not ((n==1133 and h==1142545934) or (n==1086 and h==1564724374))then return false end
+    local original,slot=ui_upvalue(sync,'current')
+    n,h=C4Batch.signature(original)
+    if not ((n==1260 and h==115342007) or (n==1187 and h==3325092559))then return false end
+    local initial_base=ui_upvalue(original,'base')
+    if type(initial_base)~='table' or getmetatable(initial_base)then return false end
+    local own_context=C4Context.records[initial_base]
+    local method=rawget(initial_base,'snapshot')
+    local full=own_context and method==own_context.replacement and own_context.original or method
+    n,h=C4Batch.signature(full)
+    if not ((n==6667 and h==1783324827) or (n==6435 and h==2083852633))then return false end
+    local self=ui_upvalue(sync,'self')
+    if self~=target then return false end
+    local known_stop=rawget(target,'stop')
+    n,h=C4Batch.signature(known_stop)
+    if not (n==443 and (h==3472837248 or h==3092073073))then return false end
+    local ok,snapshot=pcall(C4Context.make_reader,full,true)
+    if not ok then return false end
+    local base,api,game,R,NORMAL,MUTED
+    local function lean_current()
+        return snapshot(api,game,function(e,row)
+            local wm=e.global(R.global_weapon)
+            local wi=assert(e.lookup(wm+0x28,e.weapon_id,65536),'fire_gate_component_missing')
+            assert(wi<4096,'fire_gate_index_limit')
+            assert(e.read(e.ptr(e.ptr(wm+0x40,true)+wi*8,true),24,true)==e.weapon,'fire_gate_registry_mismatch')
+            local address=e.ptr(wm+0x50,true)+wi*40
+            local flags=e.u32(e.read(address,4,true),0)
+            row.weapon_driver_flags=string.format('%08x',flags)
+            assert(flags==NORMAL or flags==MUTED,'fire_gate_unsupported_flags')
+            local driver=e.global(R.global_fire_latch)
+            local di=assert(e.lookup(driver+0x20,e.weapon_id,65536),'fire_gate_driver_missing')
+            assert(di<4096,'fire_gate_driver_index_limit')
+            assert(e.read(e.ptr(e.ptr(driver+0x38,true)+di*8,true),24,true)==e.weapon,'fire_gate_driver_identity_mismatch')
+            local held=e.read(e.ptr(driver+0x48,true)+di*8,1,true):byte()~=0
+            return {weapon_id=e.weapon_id,weapon=e.weapon,owner=e.owner,manager=wm,
+                address=address,flags=flags,held=held,same=e.checked,
+                identity=table.concat({e.hex(e.entity),e.hex(e.weapon),tostring(e.owner)},':')}
+        end)
+    end
+    for i=1,32 do local name=debug.getupvalue(lean_current,i);if not name then break end
+        if name~='snapshot'then
+            local _,index=ui_upvalue(original,name)
+            if not index then return false end
+            debug.upvaluejoin(lean_current,i,original,index)
+        end
+    end
+    -- Remember current's collaborators; any later capture change selects the
+    -- complete original current, rather than applying a partial unknown path.
+    local captures={}
+    for i=1,32 do local name,value=debug.getupvalue(original,i);if not name then break end
+        captures[i]={value=value}
+    end
+    local binding
+    local function replacement()
+        local lease=rawget(target,'lease')
+        if C4FireScope.records[target]~=binding or not lease or not cfg.enabled or not cfg.c4_context_batch or
+            is_excluded('mods/etxp/c4_boundary_probe',excludes) or
+            rawget(target,'sync')~=sync or rawget(target,'stop')~=known_stop or
+            ui_upvalue(sync,'self')~=target then return original()end
+        for i,entry in ipairs(captures)do
+            local _,current=debug.getupvalue(original,i)
+            if current~=entry.value then return original()end
+        end
+        local context=C4Context.records[initial_base]
+        local current=rawget(initial_base,'snapshot')
+        if not (current==full or context and current==context.replacement and context.original==full)then
+            return original()
+        end
+        local ok,row,why,plan=pcall(lean_current)
+        if ok and plan and rawget(target,'lease')==lease and plan.identity==lease.identity and plan.flags==MUTED then
+            -- Original sync cannot acquire a new lease on this unchanged owned
+            -- branch. Every acquisition, identity change or failure uses full.
+            return row,why,plan
+        end
+        return original()
+    end
+    -- MUTED is shared with the authoritative current, even across layout reload.
+    local _,muted_slot=ui_upvalue(original,'MUTED')
+    for i=1,32 do local name=debug.getupvalue(replacement,i);if not name then break end
+        if name=='MUTED'then debug.upvaluejoin(replacement,i,original,muted_slot)end
+    end
+    binding={sync=sync,slot=slot,original=original,replacement=replacement}
+    C4FireScope.records[target]=binding
+    debug.setupvalue(sync,slot,replacement)
+    C4FireScope.active=C4FireScope.active+1
+    log('C4 fire scope: active (owned identical fire lease omits diagnostic templates; acquisition/restore/actions stay original)')
+    return true
+end
+function C4FireScope.restore()
+    for target,record in pairs(C4FireScope.records)do
+        local _,value=debug.getupvalue(record.sync,record.slot)
+        if value==record.replacement then debug.setupvalue(record.sync,record.slot,record.original)end
+        C4FireScope.records[target]=nil
+    end
+    C4FireScope.active=0;C4FireScope.attempts=0
+end
+-- END C4 FIRE SCOPE
 
 -- BEGIN C4 IDLE BATCH
 -- C4 AutoReload suspend/recovery contracts, under the MIT notice above.
@@ -1761,6 +1883,17 @@ function C4Pool.discover(roots)
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
     local context_wanted=C4Context and cfg.enabled and cfg.c4_context_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    if C4FireScope then
+        if not context_wanted and (C4FireScope.active>0 or C4FireScope.attempts>0)then C4FireScope.restore()end
+        C4FireScope.active=0
+        for target,record in pairs(C4FireScope.records)do
+            local _,value=debug.getupvalue(record.sync,record.slot)
+            if rawget(target,'sync')==record.sync and value==record.replacement then
+                C4FireScope.active=C4FireScope.active+1
+            else C4FireScope.records[target]=nil;C4FireScope.attempts=0 end
+        end
+    end
+    local fire_pending=C4FireScope and context_wanted and C4FireScope.active==0 and C4FireScope.attempts<8
     if C4UI then
         if not context_wanted and (C4UI.active>0 or C4UI.attempts>0)then C4UI.restore()end
         C4UI.active=0
@@ -1841,11 +1974,12 @@ function C4Pool.discover(roots)
         (not context_wanted or C4Context.active>0) and
         (not native_wanted or C4Native.active>0) and
         (not idle_wanted or C4Idle.active>0))
-    if (core_complete or C4Pool.attempts>=8) and not ui_pending and not scope_pending then return end
+    if (core_complete or C4Pool.attempts>=8) and not ui_pending and not scope_pending and not fire_pending then return end
     local core_last=C4Pool.attempts==7
     C4Pool.attempts=math.min(8,C4Pool.attempts+1)
     if ui_pending then C4UI.attempts=C4UI.attempts+1 end
     if scope_pending then C4InputScope.attempts=C4InputScope.attempts+1 end
+    if fire_pending then C4FireScope.attempts=C4FireScope.attempts+1 end
     local pending,seen={},{}
     local function push(value)
         local kind=type(value)
@@ -1866,6 +2000,7 @@ function C4Pool.discover(roots)
                 local name,next_=debug.getupvalue(value,i)
                 if not name then break end
                 if is_c4 then
+                    if fire_pending then C4FireScope.attach(next_)end
                     if scope_pending then C4InputScope.attach(next_)end
                     if ui_pending and name=='native_ui' then C4UI.attach(next_)end
                     if idle_wanted and name=='auto_reload' then C4Idle.attach(next_)end
@@ -1878,7 +2013,8 @@ function C4Pool.discover(roots)
                        (not native_wanted or C4Native.active>0) and
                        (not idle_wanted or C4Idle.active>0) and
                        (not ui_pending or C4UI.active>0) and
-                       (not scope_pending or C4InputScope.active>=2) then return end
+                       (not scope_pending or C4InputScope.active>=2) and
+                       (not fire_pending or C4FireScope.active>0) then return end
                     if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
                 elseif type(next_)=='function' and
                        (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
@@ -1888,6 +2024,7 @@ function C4Pool.discover(roots)
                 end
             end
         elseif getmetatable(value)==nil then
+            if fire_pending then C4FireScope.attach(value)end
             if scope_pending then C4InputScope.attach(value)end
             if native_wanted then C4Native.attach(value)end
             if idle_wanted then C4Idle.attach(value)end
@@ -1897,7 +2034,8 @@ function C4Pool.discover(roots)
                        (not native_wanted or C4Native.active>0) and
                        (not idle_wanted or C4Idle.active>0) and
                        (not ui_pending or C4UI.active>0) and
-                       (not scope_pending or C4InputScope.active>=2) then return end
+                       (not scope_pending or C4InputScope.active>=2) and
+                       (not fire_pending or C4FireScope.active>0) then return end
             local count=0
             for _,next_ in next,value do
                 count=count+1;if count>64 then break end
@@ -1907,6 +2045,9 @@ function C4Pool.discover(roots)
     end
     if scope_pending and C4InputScope.attempts==8 and C4InputScope.active<2 then
         log('C4 input scope: supported input gates not found; remaining syncs unchanged')
+    end
+    if fire_pending and C4FireScope.attempts==8 and C4FireScope.active==0 then
+        log('C4 fire scope: supported original fire gate not found; unchanged')
     end
     if core_last then
         if idle_wanted and C4Idle.active==0 then log('C4 idle batch: no supported original suspend found; unchanged')end
@@ -2461,8 +2602,8 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.36: bounded C4 owned-input verification; live game acceptance pending.
-测试候选3.0.36：限制C4已接管输入的重复代码校验，尚待实际游戏验收。
+Candidate 3.0.37: C4 owned-fire maintenance omits diagnostic templates; live acceptance pending.
+测试候选3.0.37：C4已有射击接管省去诊断模板扫描，尚待实际游戏验收。
 
 [Report an issue / 反馈问题]
   The game creates Collect-Logs.bat next to this README on first run
@@ -2500,6 +2641,8 @@ Candidate 3.0.36: bounded C4 owned-input verification; live game acceptance pend
     / 上下文校验分块测试，默认no。每项仍校验新数据；大读取失败回退。
     Flags-only C4 UI checks keep fresh identity and map/menu flags, without action data.
     / C4界面检查仅采集新鲜身份和地图/菜单标志，不采集无关动作数据。
+    Identical owned-fire maintenance omits unused diagnostic templates; acquisition stays complete.
+    / 同一已有射击接管省去未使用的诊断模板扫描；首次接管保留完整读取。
   c4_native_batch=yes/no   candidate native code verification batches (default no)
     Owned aim maintenance checks fresh mapping/index code only; owned fire makes no native call.
     Acquisition, restoration and actions retain full verification; all dynamic inputs stay fresh.

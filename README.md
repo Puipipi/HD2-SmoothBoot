@@ -1,5 +1,39 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.37**：继续减少C4常态扫描。已有相同身份且仍被接管的
+射击状态维护，省去未被这条路径使用的能力模板诊断扫描；任务、人物、背包、
+武器与weapon-data登记表、射击标志及按下状态仍新读并校验。首次接管、身份/
+武器/标志变化、未知依赖或读取异常走完整原逻辑；原sync/stop、恢复和投掷/
+引爆不替换。私有读取器不会改变其他snapshot消费者。沿用默认关闭的
+`c4_context_batch=yes`，关闭、排除、重载可恢复；不改第三方文件或配置。
+
+现代LuaJIT和独立游戏Lua库通过34项对照/故障检查，以及完整模块120对回调、
+发现、热关闭、排除和重载检查。合成模板表中，单次已有射击接管读取次数：
+1槽80→75，16槽95→75，128槽207→75；收益取决于模板探测长度。
+**这些是局部模拟结果，3.0.37尚待实际游戏功能和FPS验收。**
+
+3.0.36已实机确认投掷、引爆、切回主武器的射击/瞄准正常；同进程前台中位
+主武器162FPS、C4 148FPS，性能问题仍在。尚未验证焦点和死亡恢复等全部边界。
+
+Development candidate **3.0.37** omits unused diagnostic ability-template scans
+only while maintaining an already owned, identical MUTED fire lease. Mission,
+avatar, inventory, weapon/weapon-data registries, flags, held state and guards
+stay fresh. Acquisition, identity/weapon/flag changes, unknown collaborators and
+read faults use the complete original path. Original sync/stop, restoration and
+actions remain authoritative. The private reader does not alter other snapshot
+consumers. Uses default-off `c4_context_batch=yes`; opt-out/exclusion/reload restore.
+No third-party files/configuration changes.
+
+Both LuaJIT runtimes passed34 differential/fault checks and120 paired callbacks,
+discovery, hot opt-outs, exclusion and reload. Synthetic1/16/128-slot fixtures
+reduced owned-fire reads80/95/207 to75. Benefit depends on actual probe length.
+**These are local simulations; 3.0.37 needs live functional/FPS acceptance.**
+3.0.36 throwing/detonation and primary fire/aim restoration were confirmed by
+the user; foreground median162FPS primary vs148FPS C4 remains unresolved.
+Focus/death restoration and other boundaries have not yet been accepted.
+
+以下保留历史候选记录。
+
 当前开发候选 **3.0.36**：限制已确认的 C4 1.11 常态输入维护中的重复原生代码
 校验。已经接管的瞄准输入只检查本次实际调用的映射/索引函数及跳转表；已接管
 开火输入不调用原生函数。每次仍完整读取动态状态、按键、输入掩码和绑定，保留
