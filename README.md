@@ -1,5 +1,31 @@
 # HD2 SmoothBoot
 
+3.0.27 增加 **默认关闭的上下文校验合并候选**，`c4_context_batch=yes` 启用。
+这是针对实机短时采样中反复出现的 ContextReader 校验路径继续做的试验。
+只接入已核对完整字节码的原始 snapshot；共享原有布局和辅助函数的上值，
+保留其他上下文逻辑、每项保护字段、每次校验的新读取及原生动作。
+仅缓存读取范围计划，不缓存游戏数据；大读取失败回退原字段，连失败回退也
+保留768次/32768字节预算。稀疏布局或预算不足时按原字段读取。
+关闭选项/总开关/排除C4会还原，第三方后来替换的函数不覆盖。
+
+在原始 ContextReader 与测试进程内存的同一夹具中，一次校验从234次原生读取
+减少到22次；全部观察字段一致，字段变化拒绝、失败回退、辅助函数共享、
+自动发现和关闭还原验证通过，游戏自带Lua库也通过这些独立状态验证。
+**没有完成3.0.27任务内FPS及功能验收，仍为候选版，不应作为稳定版发布。**
+
+3.0.27 adds an **opt-in context validation batch candidate**:
+`c4_context_batch=yes`. It supports only the verified original snapshot, shares
+the original layout/helper upvalues, compares every original guard to fresh data,
+and keeps native actions and input policy. Only address plans are retained;
+failed larger reads fall back to original fields within the existing read/byte
+budgets. Disabling or excluding restores the original method and preserves later
+third-party replacements. No third-party installed files are modified.
+The original ContextReader fixture fell from 234 to 22 native validation reads,
+with mutation/failure/restore tests also passing in the game Lua library's
+independent state. **In-game FPS and action validation remain pending.**
+
+以下是3.0.26的实机反馈，不能作为3.0.27验收。
+
 3.0.26 增加 **默认关闭的 C4 按键表分块读取候选**，需使用
 `c4_input_batch=yes` 启用。仅接入字节码身份已核对的原始 AimInputState；
 其他版本不接入。读取按 12 个表项一块合并，每次校验读取新数据并比较原有的

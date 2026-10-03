@@ -24,14 +24,17 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.26' then return old end
+if old and old.version=='3.0.27' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
 if old and type(old.c4_input_batch)=='table' and type(old.c4_input_batch.restore)=='function' then
     pcall(old.c4_input_batch.restore)
 end
-local M={version='3.0.26',status='starting'}
+if old and type(old.c4_context_batch)=='table' and type(old.c4_context_batch.restore)=='function' then
+    pcall(old.c4_context_batch.restore)
+end
+local M={version='3.0.27',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -98,7 +101,7 @@ end
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,ui_mods='',scanners='',boot_pause_s=10,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,ui_mods='',scanners='',boot_pause_s=10,
                     writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
@@ -133,7 +136,7 @@ local function conf()
                 w:write('throttle=auto\nprofile=yes\n')
                 w:write('# candidate: reuse C4 native read buffers, never cache memory or skip input\n')
                 w:write('c4_read_pool=yes\n')
-                w:write('c4_read_profile=no\nc4_input_batch=no\n')
+                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -218,6 +221,8 @@ local function conf()
         if v then defaults.c4_read_profile=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*c4_input_batch%s*=%s*(%a+)%s*$')
         if v then defaults.c4_input_batch=(v=='yes' or v=='true' or v=='on') end
+        v=line:match('^%s*c4_context_batch%s*=%s*(%a+)%s*$')
+        if v then defaults.c4_context_batch=(v=='yes' or v=='true' or v=='on') end
         for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
                              'writer_release_s','writer_stagger_s',
@@ -602,6 +607,351 @@ function C4Batch.restore()
 end
 -- END C4 INPUT BATCH
 
+-- BEGIN C4 CONTEXT BATCH
+-- ContextReader contract adapted from HD2 C4 Quick Actions under the MIT
+-- notice above. Candidate changes validation reads only: every original guard
+-- is compared to fresh bytes, with original-field fallback on larger failures.
+local GuardBatch=(function()
+-- Private validation-read prototype. No cached native bytes or native writes.
+local M={}
+function M.new(guards,api,account)
+    local plan,refs,sizes,addresses={},{},{},{}
+    local function rebuild()
+        local sorted={};local total=0
+        assert(#guards<=768,'snapshot_validation_budget')
+        for i,g in ipairs(guards)do
+            local n=#g.bytes;total=total+n
+            assert(n>0 and n<=4096 and total<=32768,'snapshot_validation_budget')
+            refs[i]=g;sizes[i]=n;addresses[i]=g.at
+            sorted[i]={at=g.at,last=g.at+n,index=i}
+        end
+        table.sort(sorted,function(a,b)return a.at<b.at end)
+        local proposed={};local bytes=0;plan={}
+        for _,g in ipairs(sorted)do
+            local last=proposed[#proposed]
+            if last and g.at<=last.last+32 and math.max(last.last,g.last)-last.at<=4096 then
+                last.last=math.max(last.last,g.last)
+            else last={at=g.at,last=g.last};proposed[#proposed+1]=last end
+            plan[g.index]=last
+        end
+        for _,p in ipairs(proposed)do bytes=bytes+p.last-p.at end
+        -- Never exceed the original validation budget; sparse ranges stay small.
+        -- Reserve the complete original fallback cost as well. A failure of
+        -- every larger read must still fit the existing read/byte budgets.
+        if bytes+total>32768 or #proposed+#guards>768 or bytes>total*2 then
+            for _,g in ipairs(sorted)do plan[g.index]={at=g.at,last=g.last}end
+        end
+    end
+    return function()
+        local valid=#refs==#guards
+        if valid then for i,g in ipairs(guards)do
+            if refs[i]~=g or sizes[i]~=#g.bytes or addresses[i]~=g.at then valid=false;break end
+        end end
+        if not valid then refs,sizes,addresses={},{},{};rebuild()end
+        local data={}
+        for i,g in ipairs(guards)do
+            local p=plan[i];local b=data[p]
+            if b==nil then
+                local n=p.last-p.at
+                if account then account(n)end
+                b=api.read(p.at,n)
+                if p.at==g.at and n==#g.bytes then
+                    assert(b,'read_unavailable');assert(#b==n,'short_read')
+                end
+                -- Extra bytes can cross an unreadable gap: retry the original
+                -- field reads, in their original comparison order.
+                if not b or #b~=n then b=false end
+                data[p]=b
+            end
+            local value
+            if b then value=b:sub(g.at-p.at+1,g.at-p.at+#g.bytes)
+            else
+                if account then account(#g.bytes)end
+                value=assert(api.read(g.at,#g.bytes),'read_unavailable')
+                assert(#value==#g.bytes,'short_read')
+            end
+            if value~=g.bytes then return false end
+        end
+        return true
+    end
+end
+return M
+end)()
+local C4Context={records={},active=0,guard_batch=GuardBatch}
+M.c4_context_batch=C4Context
+function C4Context.make_reader(original)
+    local R,D
+local ContextReader=(function()
+
+local bit = require('bit')
+local M = {}
+local INVALID = 0xffffffff
+local DETONATOR = '51f50d6321f52f3d'
+local CHARGE = '9b75217d8312dd67'
+local AVATAR = '4d1c334d294dfa97'
+local function u32(b,o)
+    assert(b and o>=0 and o+4<=#b,'short_u32')
+    local a,c,d,e=b:byte(o+1,o+4)
+    return a+c*256+d*65536+e*16777216
+end
+local function resource(b)
+    local out={}
+    for i=8,1,-1 do out[#out+1]=string.format('%02x',b:byte(i)) end
+    return table.concat(out)
+end
+local function hex(b)
+    return (b:gsub('.',function(c) return string.format('%02x',c:byte()) end))
+end
+local function product_low(a,b)
+
+    return ((a%65536)*(b%65536)+
+        ((math.floor(a/65536)*(b%65536)+(a%65536)*math.floor(b/65536))%65536)*65536)%4294967296
+end
+M.u32=u32
+function M.f32(b,o)
+    local n=u32(b,o);local sign=n>=0x80000000 and -1 or 1
+    local exponent=math.floor(n/0x800000)%256;local fraction=n%0x800000
+    assert(exponent~=255,'nonfinite_native_float')
+    return sign*(exponent==0 and fraction*2^-149 or (1+fraction/0x800000)*2^(exponent-127))
+end
+M.product_low=product_low
+
+function M.snapshot(api,game,extend)
+    local guards,reads,bytes={},0,0
+    local validation_reads,validation_bytes=0,0
+    local extension_result
+    local function read(at,n,guard)
+        assert(type(at)=='number' and at>=65536 and at+n<0x800000000000,'invalid_address')
+        reads=reads+1;bytes=bytes+n
+        assert(n>0 and n<=4096 and reads<=768 and bytes<=32768,'snapshot_budget')
+        local b=assert(api.read(at,n),'read_unavailable')
+        assert(#b==n,'short_read')
+        if guard then guards[#guards+1]={at=at,bytes=b} end
+        return b
+    end
+    local function ptr(at,guard)
+        local p=assert(api.pointer(read(at,8,guard)),'pointer_unavailable')
+        assert(p>=65536 and p<0x800000000000,'invalid_pointer')
+        return p
+    end
+    local function global(rva) return ptr(game+rva,true) end
+    local function lookup(at,key,limit)
+        local h=read(at,20,true)
+        local n,empty,mult=u32(h,8),u32(h,12),u32(h,16)
+        assert(n<=limit and (n==0 or bit.band(n,n-1)==0),'unsupported_map')
+        if n==0 or key==empty or key==INVALID then return nil end
+        local p=assert(api.pointer(h),'map_pointer_unavailable')
+        for probe=0,math.min(n,128)-1 do
+            local slot=(product_low(key,mult)+probe)%n
+            local row=read(p+slot*8,8,true)
+            local k=u32(row,0)
+            if k==key then
+                local index=u32(row,4)
+                if index~=INVALID then return index end
+                return nil
+            end
+            if k==empty then return nil end
+        end
+        error('map_probe_limit')
+    end
+    local batched
+    local function checked()
+        if not batched then
+            batched=GuardBatch.new(guards,api,function(n)
+                validation_reads=validation_reads+1;validation_bytes=validation_bytes+n
+            end)
+        end
+        return batched()
+    end
+    local row={current_weapon='UNKNOWN',current_fire_mode='UNKNOWN',
+        action_result='OBSERVATION_ONLY',context_status='unresolved',
+        c4_guard_candidate=false,layout_evidence='STATIC_DERIVATION_PENDING_LIVE_VALIDATION'}
+    local function finish(reason)
+        if not checked() then return nil,'context_changed_during_read' end
+        if reason~='c4_context_observed' then row.c4_guard_candidate=false end
+        row.context_status=reason;row.memory_reads=reads+validation_reads;row.memory_bytes=bytes+validation_bytes
+        return row,nil,extension_result
+    end
+    local mode=read(global(R.global_mode),0x44,true)
+    if u32(mode,8)==0 or u32(mode,0x40)<1 or u32(mode,0x40)>7 then
+        return finish('waiting_for_mission')
+    end
+    local pm=global(R.global_player)
+    local counts=read(pm+0x84,8,true)
+    assert(u32(counts,0)<=4 and u32(counts,4)<=4,'unsupported_player_counts')
+    if u32(counts,0)==0 or u32(counts,4)==0 then return finish('waiting_for_local_player') end
+    local player=read(ptr(pm+0xe8,true),24,true)
+    if bit.band(player:byte(21),1)==0 then return finish('local_player_not_owned') end
+    local unit=u32(read(pm+0x3a8,4,true),0)
+    if unit==0x7fff then return finish('waiting_for_avatar') end
+    local owner=global(R.global_owner)
+    local ei=lookup(owner+D.entity_unit_map,unit,1048576)
+    if not ei then return finish('avatar_map_missing') end
+    assert(ei<262144,'entity_index_limit')
+    local entity=read(owner+D.entity_array+ei*24,24,true)
+    if resource(entity)~=AVATAR or bit.band(entity:byte(21),1)==0 then
+        return finish('avatar_identity_rejected')
+    end
+    local id=u32(entity,8)
+    local avatar=global(R.global_avatar)
+    local ai=lookup(avatar+0xf8,id,64)
+    local n=u32(read(avatar+0x6c,4,true),0)
+    assert(n<=8,'avatar_count_limit')
+    if not ai or ai>=n then return finish('avatar_registry_missing') end
+    if read(ptr(avatar+0x110+ai*8,true),24,true)~=entity then
+        return finish('avatar_registry_mismatch')
+    end
+    row.local_entity_id=id;row.local_avatar_index=ai
+    local inventory=global(R.global_inventory)
+    local ii=lookup(inventory+0x28,id,65536)
+    local count=u32(read(inventory+0x14,4,true),0)
+    assert(count<=4096,'inventory_count_limit')
+    if not ii or ii>=count then return finish('inventory_missing') end
+    if read(ptr(ptr(inventory+0x40,true)+ii*8,true),24,true)~=entity then
+        return finish('inventory_owner_mismatch')
+    end
+    local state=read(ptr(inventory+0x50,true)+ii*48,48,true)
+    row.inventory_words={}
+    for i=0,11 do row.inventory_words[tostring(i*4)]=u32(state,i*4) end
+    local slot=u32(state,0x1c)
+    row.selected_slot=slot
+    local offsets={[1]=0,[2]=4,[3]=8,[4]=16,[5]=16,[6]=12}
+    if not offsets[slot] then return finish('no_selected_weapon') end
+    local weapon_id=u32(state,offsets[slot])
+    row.selected_entity_id=weapon_id
+    if weapon_id==0 or weapon_id==INVALID then return finish('selected_entity_missing') end
+    local wi=lookup(owner+D.entity_id_map,weapon_id,1048576)
+    if not wi then return finish('selected_entity_missing') end
+    assert(wi<262144,'weapon_entity_index_limit')
+    local weapon=read(owner+D.entity_array+wi*24,24,true)
+    if u32(weapon,8)~=weapon_id then return finish('selected_entity_mismatch') end
+    local hash=resource(weapon)
+    row.current_weapon_resource=hash
+    row.current_weapon=hash==DETONATOR and 'C4_DETONATOR' or hash==CHARGE and 'C4_CHARGE' or 'OTHER'
+    row.weapon_owned=bit.band(weapon:byte(21),1)~=0
+    row.c4_guard_candidate=hash==DETONATOR and row.weapon_owned
+
+
+    if not row.c4_guard_candidate then return finish('selected_weapon_observed') end
+
+    local wd=global(R.global_weapon_data)
+    local di=lookup(wd+0x30,weapon_id,65536)
+    local dn=u32(read(wd+0x1c,4,true),0)
+    assert(dn<=4096,'weapon_data_count_limit')
+    if di and di<dn then
+        if read(ptr(ptr(wd+0x48,true)+di*8,true),24,true)~=weapon then
+            return finish('weapon_data_owner_mismatch')
+        end
+        local base=ptr(wd+0x58,true)+di*D.weapon_data_stride
+        local types=read(base+D.weapon_types,16,true)
+        local packed=read(ptr(wd+0x60,true)+di*12,12,true)
+        row.weapon_state_12=hex(packed)
+        row.weapon_state_flags=hex(read(ptr(wd+0x50,true)+di*2,2,true))
+        row.weapon_function_types={};row.weapon_function_values={}
+        local shifts={[1]=4,[7]=0,[8]=2,[9]=6,[10]=8,[11]=10,[12]=14}
+        for i=0,3 do
+            local k=u32(types,i*4)
+            row.weapon_function_types[tostring(i)]=k
+            if shifts[k] then
+                row.weapon_function_values[tostring(i)]=bit.band(bit.rshift(u32(packed,4),shifts[k]),3)
+            end
+        end
+    else row.weapon_data_status='missing' end
+
+
+
+    local templates=ptr(owner+D.ability_templates,true)
+    local start=0
+    for b=8,1,-1 do start=(start*256+weapon:byte(b))%D.ability_capacity end
+    row.ability_template_status='absent'
+    for probe=0,D.ability_capacity-1 do
+        local t=read(templates+((start+probe)%D.ability_capacity)*16,16,true)
+        local key=resource(t)
+        if key=='0000000000000000' then break end
+        if key==hash then
+            local ti=u32(t,8)
+            assert(ti<D.ability_capacity,'ability_template_index_limit')
+            local config=read(templates+D.ability_capacity*16+ti*0x58,0x58,true)
+            row.ability_template_status='present';row.ability_template_hex=hex(config)
+            row.ability_descriptors={}
+            for i=0,1 do
+                local o=i*40
+                row.ability_descriptors[tostring(i)]={weapon_ability_id=u32(config,o),
+                    owner_ability_id=u32(config,o+4),other_ability_id=u32(config,o+8),
+                    flag_32=config:byte(o+33),flag_33=config:byte(o+34)}
+            end
+            break
+        end
+    end
+    if extend then
+
+
+
+        local ok,result=pcall(extend,{read=read,ptr=ptr,global=global,lookup=lookup,
+            checked=checked,u32=u32,hex=hex,resource=resource,entity=entity,weapon=weapon,
+            id=id,weapon_id=weapon_id,owner=owner,avatar=avatar,avatar_index=ai,
+            weapon_data=wd,weapon_data_index=di},row)
+        if ok then
+            extension_result=result;row.action_context_status='validated'
+        else
+            extension_result=nil;row.action_context_status='rejected'
+            row.action_diagnostic=tostring(result)
+            row.action_context_error=row.action_diagnostic:match(':%d+: (.*)$') or row.action_diagnostic
+            row.action_gate='ACTION_CONTEXT_REJECTED'
+        end
+    end
+    return finish('c4_context_observed')
+end
+return M
+
+end)()
+
+    local replacement=ContextReader.snapshot
+    local captured={}
+    for i=1,32 do
+        local name,value=debug.getupvalue(original,i);if not name then break end
+        captured[name]={index=i,value=value}
+    end
+    assert(type(captured.R)=='table' and type(captured.R.value)=='table' and
+           type(captured.D)=='table' and type(captured.D.value)=='table','context_layout_not_ready')
+    -- Share the original upvalue cells, including dynamic R/D and helpers.
+    -- No polling, stale layout copies, or replacement of another mod's helpers.
+    for i=1,32 do
+        local name=debug.getupvalue(replacement,i);if not name then break end
+        if name~='GuardBatch' then
+            local entry=assert(captured[name],'context_upvalue_missing:'..name)
+            debug.upvaluejoin(replacement,i,original,entry.index)
+        end
+    end
+    return replacement
+end
+function C4Context.attach(target)
+    if not cfg.enabled or not cfg.c4_context_batch or type(target)~='table' or
+       getmetatable(target) or type(debug.upvaluejoin)~='function' or
+       is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
+    local original=rawget(target,'snapshot')
+    if type(original)~='function' or
+       function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
+    local length,hash=C4Batch.signature(original)
+    if not ((length==6667 and hash==1783324827) or (length==6435 and hash==2083852633)) then
+        return false
+    end
+    local ok,replacement=pcall(C4Context.make_reader,original)
+    if not ok then log('C4 context batch: unsupported capture; unchanged');return false end
+    C4Context.records[target]={original=original,replacement=replacement}
+    rawset(target,'snapshot',replacement);C4Context.active=1
+    log('C4 context batch: active (verified original snapshot; fresh checks and native actions preserved)')
+    return true
+end
+function C4Context.restore()
+    for target,record in pairs(C4Context.records)do
+        if rawget(target,'snapshot')==record.replacement then rawset(target,'snapshot',record.original)end
+        C4Context.records[target]=nil
+    end
+    C4Context.active=0
+end
+-- END C4 CONTEXT BATCH
+
 -- BEGIN C4 READ POOL
 -- Optional Smooth-owned runtime adapter for the measured C4 1.11 reader.
 -- No global FFI proxy, memory cache, native write, guard bypass, or tick skip.
@@ -735,6 +1085,18 @@ function C4Pool.discover(roots)
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
     local batch_wanted=cfg.enabled and cfg.c4_input_batch and
         not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    local context_wanted=C4Context and cfg.enabled and cfg.c4_context_batch and
+        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
+    if C4Context and C4Context.active>0 and not context_wanted then
+        C4Context.restore();log('C4 context batch: disabled; original snapshot restored')
+    end
+    if C4Context then
+        C4Context.active=0
+        for target,record in pairs(C4Context.records)do
+            if rawget(target,'snapshot')==record.replacement then C4Context.active=C4Context.active+1
+            else C4Context.records[target]=nil;C4Pool.attempts=0 end
+        end
+    end
     if C4Batch and C4Batch.active>0 and not batch_wanted then
         C4Batch.restore();log('C4 input batch: disabled; original input reader restored')
     end
@@ -742,7 +1104,7 @@ function C4Pool.discover(roots)
        is_excluded('mods/etxp/c4_boundary_probe',excludes) then
         if C4Pool.active>0 then C4Pool.restore();log('C4 read pool: disabled; original reader restored') end
         C4Pool.attempts=0
-        if not batch_wanted then return end
+        if not batch_wanted and not context_wanted then return end
     end
     for _,record in pairs(C4Pool.records)do
         if record.profiling~=(not not cfg.c4_read_profile) or
@@ -756,7 +1118,8 @@ function C4Pool.discover(roots)
         else C4Pool.records[api]=nil end
     end
     if ((not pool_wanted or C4Pool.active>0) and
-        (not batch_wanted or C4Batch and C4Batch.active>0)) or C4Pool.attempts>=8 then return end
+        (not batch_wanted or C4Batch and C4Batch.active>0) and
+        (not context_wanted or C4Context.active>0)) or C4Pool.attempts>=8 then return end
     C4Pool.attempts=C4Pool.attempts+1
     local pending,seen={},{}
     local function push(value)
@@ -779,8 +1142,10 @@ function C4Pool.discover(roots)
                 if not name then break end
                 if is_c4 then
                     if name=='AimInputState' and C4Batch and batch_wanted then C4Batch.attach(next_)end
+                    if (name=='ContextReader' or name=='reader') and context_wanted then C4Context.attach(next_)end
                     if name=='api' and C4Pool.attach(next_) and
-                       (not batch_wanted or C4Batch and C4Batch.active>0) then return end
+                       (not batch_wanted or C4Batch and C4Batch.active>0) and
+                       (not context_wanted or C4Context.active>0) then return end
                     if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
                 elseif type(next_)=='function' and
                        (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
@@ -789,7 +1154,9 @@ function C4Pool.discover(roots)
                 end
             end
         elseif getmetatable(value)==nil then
-            if C4Pool.attach(value) and (not batch_wanted or C4Batch and C4Batch.active>0) then return end
+            if context_wanted then C4Context.attach(value)end
+            if C4Pool.attach(value) and (not batch_wanted or C4Batch and C4Batch.active>0) and
+                       (not context_wanted or C4Context.active>0) then return end
             local count=0
             for _,next_ in next,value do
                 count=count+1;if count>64 then break end
@@ -797,7 +1164,12 @@ function C4Pool.discover(roots)
             end
         end
     end
-    if C4Pool.attempts==8 then log('C4 read pool: no supported reader found; no changes made') end
+    if C4Pool.attempts==8 then
+        if pool_wanted and C4Pool.active==0 then log('C4 read pool: no supported reader found; no changes made')end
+        if context_wanted and C4Context.active==0 then
+            log('C4 context batch: no supported original snapshot found; unchanged')
+        end
+    end
 end
 -- END C4 READ POOL
 
@@ -1309,6 +1681,10 @@ local function provision_tools()
     / 每次仍读取最新内存；保留C4输入、校验和炸药跟踪。
     Set no and restart to compare with the original reader; no third-party files change.
     / 改为no并重启可对照原版读取；不修改其他作者的安装文件。
+  c4_context_batch=yes/no  candidate context validation batches (default no)
+    / 上下文校验分块测试，默认no。每项仍校验新数据；大读取失败回退。
+    Native actions, input policy and validation limits are preserved.
+    / 保留原生动作、输入策略及校验限制。切换可热生效，不是稳定版保证。
   exclude=FRAG,...      never manage these mods / 排除托管
   writers=FRAG,...      writer mods held at boot / 开机扣留的写入器
   writer_release_s=10   seconds before first release / 首个放行延时
