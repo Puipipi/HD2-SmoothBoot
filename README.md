@@ -1,14 +1,14 @@
 # HD2 SmoothBoot
 
-当前开发候选 **3.0.45** 修正写入保护门的性能归属：按源码归属的性能面板会将门显示为“被托管模组名称 [SB gate]”，把原模组工作及少量转发开销计入这行，Smooth 调度器保留独立一行。标签明确区分我们的代理与第三方原回调，没有修改第三方文件或 Watchdog，也没有关闭计时来降低数值。
+当前正式维护版 **3.0.45** 修正写入保护门的性能归属：按源码归属的性能面板会将门显示为“被托管模组名称 [SB gate]”，把原模组工作及少量转发开销计入这行，Smooth 调度器保留独立一行。标签明确区分我们的代理与第三方原回调，没有修改第三方文件或 Watchdog，也没有关闭计时来降低数值。
 
 保持原有探针和释放方式；只让我们自己的小转发函数不被 JIT 内联缓存，避免后来插入的探针被绕过。避免将自己的保护门误当新模组重新接管。现代 LuaJIT 和独立游戏 Lua 库的实际 Watchdog 源码对照通过：原先误算到 Smooth 的合成 79.09 ms/s 已分回具体模组，总耗时和回调次数保持一致。
 
-**2026-10-04 实机启动归属验收通过**：44 节调用链保留，六个保护门显示具体模组，Smooth 仅余独立一节；首两分钟未进 Watchdog 前十（约≤1.72/2.60 ms/s），原版对应473.44/120.67 ms/s。该结果是归属修正，不能作为两局实际 CPU/FPS 节省量；对局与所有第三方功能的完整验收不在本轮范围内。工具在首次运行正常重新生成。
+**2026-10-04 实机验收通过**：44 节调用链保留，六个保护门显示具体模组，Smooth 仅余独立一节；首两分钟未进 Watchdog 前十（约≤1.72/2.60 ms/s），修复前对应473.44/120.67 ms/s。另一次连续运行中，用户完成任务、死亡复活、返舰船及军械库/Esc/舰船快捷键检查，均报告正常；530.7秒采集中的Smooth回调错误计数均为0，9个完整Watchdog窗口均保持44节。该结果是归属与本机功能验收，不是实际CPU/FPS节省量或所有第三方功能的全面保证。工具在首次运行正常重新生成。详见 [3.0.45发布说明](RELEASE-NOTES-3.0.45.md)。
 
 工具生成路径保持 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\Collect-Logs.bat`，与 `config.txt` 同目录。用户已确认文件存在；打包 ZIP 和排除名单合并的隔离检查通过。安装 ZIP 仍不含裸 BAT。
 
-Development candidate **3.0.45** makes held-writer ownership explicit in source-based profilers as `writer name [SB gate]`. The row includes the original writer's work and the routing shell's small overhead; the governor retains its own SmoothBoot row. Profiler probes, results and release policies stay intact. Only our forwarding helper is kept interpreted to prevent JIT inlining from bypassing later probes. No foreign files or Watchdog tables are changed. Deterministic replay with unchanged Watchdog source in both LuaJIT runtimes preserves total work and callback counts while moving synthetic 79.09 ms/s back to its owners. **Live startup attribution was verified on 2026-10-04:** all 44 links remained, six gates were named and Smooth had one link. Its first two windows were below the top-ten thresholds (about 1.72/2.60 ms/s); this is not a measured CPU/FPS saving or full mission/function acceptance. The companion tool was regenerated beside config.txt, not in Arsenal's library.
+Maintenance release **3.0.45** makes held-writer ownership explicit in source-based profilers as `writer name [SB gate]`. The row includes the original writer's work and the routing shell's small overhead; the governor retains its own SmoothBoot row. Profiler probes, results and release policies stay intact. Only our forwarding helper is kept interpreted to prevent JIT inlining from bypassing later probes. No foreign files or Watchdog tables are changed. Deterministic replay with unchanged Watchdog source in both LuaJIT runtimes preserves total work and callback counts while moving synthetic 79.09 ms/s back to its owners. **Live acceptance on 2026-10-04:** startup attribution and tool generation passed; the user then reported normal mission, death/respawn and return-to-ship checks. The 530.7-second recording had zero reported Smooth callback errors and nine complete Watchdog windows retained 44 links. These checks do not establish universal compatibility or CPU/FPS savings. The companion tool was regenerated beside config.txt, not in Arsenal's library. See [release notes](RELEASE-NOTES-3.0.45.md).
 
 以下保留历史候选记录。
 

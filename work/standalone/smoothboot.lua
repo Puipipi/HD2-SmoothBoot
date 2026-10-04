@@ -2928,8 +2928,10 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.45: writer hold gates now carry the delegated writer's name plus [SB gate] in source-based profilers. This identifies our routing shell, not a changed third-party file. Released writer work and the shell's forwarding overhead are charged to that row; SmoothBoot's governor keeps its own row. Profiler probes, callback results and release timing are preserved. No work is hidden or disabled to lower the displayed cost.
-候选3.0.45：写入保护门在按源码归属的性能面板中显示被托管模组名称及[SB gate]标记，明确表示这是我们的转发门，并非修改了第三方文件。释放后原模组的执行耗时与门本身的转发开销计入该行；SmoothBoot调度器仍保留独立一行。计时探针、回调返回值和释放时机保留；没有通过隐藏或禁用工作降低显示数值。
+Release 3.0.45: writer hold gates now carry the delegated writer's name plus [SB gate] in source-based profilers. This identifies our routing shell, not a changed third-party file. Released writer work and the shell's forwarding overhead are charged to that row; SmoothBoot's governor keeps its own row. Profiler probes, callback results and release timing are preserved. No work is hidden or disabled to lower the displayed cost.
+正式版3.0.45：写入保护门在按源码归属的性能面板中显示被托管模组名称及[SB gate]标记，明确表示这是我们的转发门，并非修改了第三方文件。释放后原模组的执行耗时与门本身的转发开销计入该行；SmoothBoot调度器仍保留独立一行。计时探针、回调返回值和释放时机保留；没有通过隐藏或禁用工作降低显示数值。
+Accepted on 2026-10-04: live startup attribution and companion-tool generation, followed by user-operated mission, death/respawn and return-to-ship checks. This is an attribution maintenance release, not a claim of universal compatibility or a C4/FPS fix.
+2026-10-04验收：实机启动归属与工具生成正常，用户操作的任务、死亡复活、返舰船检查正常。这是计时归属维护版，不承诺所有模组兼容，也不宣称修复C4帧率问题。
 Candidate 3.0.44 (bug-fix): the "cannot splice" note now distinguishes the two causes. If the wrapper above keeps no function upvalue as its previous hook, replacing hooks at runtime is why it sits above us and mod order cannot change that; the old wording told users to reorder a list that was already correct.
 候选3.0.44（修复版）：把“无法插入”的提示分成两种真实原因。若上方包装层没有用函数 upvalue 保存上一个钩子，那是它运行期重包导致的，调整顺序也没用；旧文案会误导用户去改一个本来就正确的顺序。
 Candidate 3.0.43 (bug-fix): collector exclude picker ignores "config check" lines; the config-check warning no longer contains the words "chain inventory"; the shipped LTE default explains itself and how to remove it; chain inventory is re-logged when it changes and unmanaged sources are listed separately; "rehooks" is logged once per source with an above-SmoothBoot note; the load-order hint is printed on the first frame.
