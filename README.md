@@ -1,5 +1,38 @@
 # HD2 SmoothBoot
 
+当前开发候选 **3.0.40**：将安全的通用优化放入 Smooth 的公共回调路径。
+不再逐帧创建返回值表或心跳闭包，并完整保留末尾 nil 和多返回值。
+写入门的异常、循环保护及 Watchdog 下游探针保持原有策略。
+弹道 HUD、Enemy HP、DiversBestFriend、Aggro Counter 的回调会在首帧、
+调用链头变化时及周期巡检中识别，包括深层更新总线；所在链条不会被跳帧或暂停。
+这是整条链的保守保护，**不是逐模组独立节流**；高开销反馈仍需实机对照。
+没有新增通用 FFI 钩子、缓存游戏动态数据或改动第三方模组文件。
+
+92 项回归测试、独立游戏 Lua 库的输入/射击/UI 校验以及两种运行库的
+32 种 HUD 调用链布局检查通过。模拟中的 180 帧均保留 180 次更新/绘制通知。
+**模拟通过不等于实机验收；3.0.40 尚未确认 HUD 绘制和三项高开销反馈已解决。**
+
+Watchdog 会把 Smooth 写入门后执行的部分工作归入 Smooth。ms/s 是每秒累计，
+worst 是最慢单帧；“游戏”这一行测的是更新回调，不是完整游戏 CPU/GPU 负载。
+Super Earth 6.2.1 的当前实机日志显示第 388 帧进入 ready、31/31 被动找到，
+re-applied=0、refused=0；启动扫描阶段开销较高本身不是故障。
+
+Development candidate **3.0.40** removes per-frame result-table/heartbeat-closure
+allocation from common dispatch, preserves exact return arity (including nil),
+and keeps writer-cycle/error policies and downstream profiler probes intact.
+Frame-critical callback discovery now covers the four reported HUD/input mods,
+late-loaded heads and deep update buses. Their enclosing chain is neither skipped
+nor paused. This is conservative whole-chain protection, not selective scheduling.
+No foreign files, generic FFI hooks or persistent dynamic-memory caches are changed.
+
+92 regression tests and independent game-library input/fire/UI checks passed;
+32 simulated HUD layouts preserve every callback. **Live drawing/function/cost
+acceptance remains pending.** Watchdog can charge writer work behind our gates to
+Smooth; its game row is not total engine CPU/GPU work. Super Earth reached ready
+at frame 388 with all 31 passives and no refusals/reapplication in the saved log.
+
+以下保留历史候选记录。
+
 当前开发候选 **3.0.37**：继续减少C4常态扫描。已有相同身份且仍被接管的
 射击状态维护，省去未被这条路径使用的能力模板诊断扫描；任务、人物、背包、
 武器与weapon-data登记表、射击标志及按下状态仍新读并校验。首次接管、身份/

@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.39' then return old end
+if old and old.version=='3.0.40' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.39',status='starting'}
+local M={version='3.0.40',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -282,6 +282,10 @@ end
 local PEER_FRAGMENTS={'mods/mdl'}   -- peer loaders: equal-rank chain managers,
 -- throttling them would only hurt their own users; they stay above us.
 local UI_BUILTINS={'LTE_helmet_cape_passives','HD2Transmog','HD2MultiPerk','MaxMaelstromTraverse'}
+-- These update callbacks render or consume frame edges. Skipping their
+-- enclosing chain breaks draw cadence/input, even without a published UI table.
+local FRAME_CRITICAL_CHUNKS={'mods/codex/gun_calibration','mods/combat/enemy_hp',
+    'mods/equippedstratagems/nativestratagemradial','mods/aggro_counter/aggro_counter'}
 local function detect_ui_mods(extra)
     local names={}
     for _,n in ipairs(UI_BUILTINS) do names[#names+1]=n end
@@ -2273,6 +2277,11 @@ local function wh_make_gate(writer,nextfn)
     debug.setupvalue(writer,writer_slot,downstream)
     local ctl={open=false}
     local busy=false
+    local function completed(ok,...)
+        busy=false
+        if not ok then error((...),0) end
+        return ...
+    end
     local gate=function(...)
         if busy then
             -- re-entered while still inside ourselves: the chain looped
@@ -2286,17 +2295,75 @@ local function wh_make_gate(writer,nextfn)
         end
         busy=true
         if ctl.open then
-            local r={pcall(writer,...)}
-            busy=false
-            if r[1] then return unpack(r,2,#r) end
-            error(r[2],0)
+            return completed(pcall(writer,...))
         end
-        local r2={pcall(previous_update,...)}
-        busy=false
-        if r2[1] then return unpack(r2,2,#r2) end
-        error(r2[2],0)
+        return completed(pcall(previous_update,...))
     end
     return gate,ctl
+end
+local function refresh_frame_protection()
+    local found=detect_ui_mods(cfg.ui_mods)
+    local chunks,seen={},{}
+    local queue={}
+    local function add(fn)
+        if type(fn)=='function' and not seen[fn] and #queue<128 then
+            seen[fn]=true; queue[#queue+1]=fn
+        end
+    end
+    add(rawget(_G,'update')); add(head_above); add(WH.entry or base_prev)
+    local at=1
+    while at<=#queue and at<=128 do
+        local fn=queue[at]; at=at+1
+        if fn==wrapper then
+            add(head_above); add(WH.entry or base_prev)
+        else
+            local name=function_chunk(fn)
+            local low=name:lower()
+            for _,chunk in ipairs(FRAME_CRITICAL_CHUNKS) do
+                if (low==chunk or low==chunk..'.lua') and not chunks[name] then
+                    chunks[name]=true; found[#found+1]=name
+                end
+            end
+            for frag in (cfg.ui_chunks or 'helmet_cape_passives'):gmatch('[%w_./%-]+') do
+                if name:find(frag,1,true) and not chunks[name] then
+                    chunks[name]=true; found[#found+1]=name
+                end
+            end
+            add(wh_next(fn))
+            -- An update bus stores its previous callback in a plain table.
+            -- Inspect known callback fields only; never invoke any callback,
+            -- index metamethod or native API during discovery.
+            if name:find('mods/',1,true) then
+                for i=1,64 do
+                    local key,value=debug.getupvalue(fn,i)
+                    if not key then break end
+                    if type(value)=='table' and getmetatable(value)==nil and value~=_G
+                       and value~=package and value~=rawget(_G,'stingray') then
+                        for _,field in ipairs(WH_NEXT_NAMES) do add(rawget(value,field)) end
+                        add(rawget(value,'base')); add(rawget(value,'target'))
+                        local jobs=rawget(value,'jobs')
+                        if type(jobs)=='table' and getmetatable(jobs)==nil then
+                            local count=0
+                            for _,job in next,jobs do
+                                count=count+1; if count>64 then break end
+                                add(job)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    M.protected_sources=found
+    local protected=#found>0
+    if protected~=ui_present then
+        ui_present=protected
+        if protected then
+            log('frame-critical callbacks present ('..table.concat(found,',')..') - chain skipping and pausing suspended')
+        else
+            log('no frame-critical callbacks - automatic throttling allowed')
+        end
+    end
 end
 M.find_excluded_below=function()
     local cur=head_above or WH.entry or base_prev
@@ -2357,21 +2424,6 @@ local function wh_full_walk()
             end
         else
             local name=wh_chunk_of(cur)
-            -- frame-critical / UI chunk protection (config-driven): these
-            -- mods break visibly when throttled (halved draw rate, dead
-            -- panels) but expose no _G marker, so we match by chunk name
-            if not M._fc_found then
-                local list=cfg.ui_chunks or 'gun_calibration,helmet_cape_passives'
-                for frag in list:gmatch('[%w_./%-]+') do
-                    if frag~='' and name:find(frag,1,true) then
-                        M._fc_found=true
-                        M._fc_source=name
-                        ui_present=true
-                        log('frame-critical mod on chain ('..name..') - throttling suspended')
-                        break
-                    end
-                end
-            end
             -- one-shot chain inventory: every layer's chunk name, so users
             -- can copy exact fragments into exclude= / writers= from the log
             if WH.walks==0 then
@@ -2675,8 +2727,18 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.39: C4 rounds/reload template scans also read fresh blocks; live acceptance pending.
-测试候选3.0.39：C4弹药与装填模板也合并读取连续项、每次读取最新数据，尚待实际游戏验收。
+Candidate 3.0.40: callback forwarding avoids per-frame result tables and preserves trailing nil.
+测试候选3.0.40：减少回调转发的逐帧临时分配，完整保留包含末尾nil的返回值。
+HUD Ballistic Trajectory, Enemy HP, DiversBestFriend and Aggro Counter callbacks
+protect their enclosing chain from skipped/paused updates, including update buses.
+弹道HUD、Enemy HP、DiversBestFriend和Aggro Counter所在调用链保留逐帧更新，兼容调度总线。
+This protection is not selective per-mod scheduling. Native C4 adapters remain scoped.
+此保护不是逐模组独立节流；C4原生读取适配仍只针对已核对的实现。
+Watchdog can attribute work behind Smooth writer gates to Smooth. ms/s is accumulated
+time per second, not one frame's latency. High startup scan cost may be temporary.
+Watchdog可能把Smooth写入门后的工作归入Smooth。ms/s为每秒累计时间，不是单帧延迟。
+Game functionality and reported cost regressions still require live acceptance.
+游戏功能以及反馈的异常开销仍需实际游戏验收。
 
 [Report an issue / 反馈问题]
   The game creates Collect-Logs.bat next to this README on first run
@@ -2902,6 +2964,118 @@ log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d',
     M.version,tostring(previous~=nil),skip,#excludes))
 
 
+-- Preserve every result (including trailing nil) without allocating a table
+-- or a new completion closure on each callback. Error policies remain distinct.
+local function complete_disabled(ok,...)
+    inside=false
+    if not ok then
+        local failure=(...)
+        pcall(function()
+            local f=io.open(LOG..'.hb','a')
+            if f then f:write(os.date('!%H:%M:%S')..' chain error (disabled path): '..tostring(failure)..'\n') f:close() end
+        end)
+        error(failure,0)
+    end
+    return ...
+end
+local function complete_chain(t0,want_throttle,manual_protection,ok,...)
+    inside=false
+    local cost=(os.clock()-t0)*1000
+    if not ok then
+        local failure=(...)
+        pcall(function()
+            if M._lasterr~=tostring(failure) then
+                M._lasterr=tostring(failure)
+                local f=io.open(LOG..'.hb','a')
+                if f then f:write(os.date('!%H:%M:%S')..' chain error: '..tostring(failure)..'\n') f:close() end
+            end
+        end)
+        err_total=err_total+1
+        M.errors=err_total
+        local who=tostring(failure):match('HD2%-Addon:%s*(mods/[%w_/%-]+)') or 'unknown'
+        err_top[who]=(err_top[who] or 0)+1
+        if err_total<=10 or err_total%100==0 then
+            log('mod chain error #'..err_total..' ['..who..']: '..tostring(failure))
+        end
+    end
+    stats.n=stats.n+1
+    stats.total=stats.total+cost
+    w_total=w_total+cost; w_n=w_n+1
+    if frames-sample_mark>=300 then
+        sample_mark=frames
+        avg_hist[#avg_hist+1]=w_n>0 and w_total/w_n or 0
+        if #avg_hist>6 then table.remove(avg_hist,1) end
+        w_total,w_n=0,0
+    end
+    if cost>stats.max then stats.max=cost end
+    -- breaker accounting (mission scene only; menus are already throttled)
+    if cost>(cfg.trip_ms or 50) and settled(cfg.grace_s) and not manual_protection then
+        trips=trips+1
+        if trips>=(cfg.trip_n or 3) then
+            paused_until=os.clock()+(cfg.pause_s or 5)
+            log_paused=true
+            log(string.format('breaker OPEN: chain %.1fms x%d - pausing %ss',cost,trips,cfg.pause_s or 5))
+            trips=0
+        end
+    else
+        trips=0
+    end
+    -- adaptive skip only steers the mission/unknown case
+    local eff_ms=cfg.busy_ms or 12
+    if cfg.busy_pct and cfg.busy_pct>0 and fi_n>=120 then
+        local fi_ms=fi_t/math.max(1,fi_n)*1000
+        local pct_ms=fi_ms*cfg.busy_pct/100
+        if pct_ms>eff_ms then eff_ms=pct_ms end
+    end
+    if want_throttle then
+        if cost>eff_ms and settled(cfg.grace_s) then
+            if skip<(cfg.max_skip or 2) then skip=skip+1 log(string.format('throttle up: chain %.1fms -> skip=%d',cost,skip)) end
+        elseif cost<(cfg.idle_ms or 1.5) and skip>1 then
+            skip=skip-1
+            if skip==1 then log('throttle released: chain is cheap, running every frame') end
+        end
+    end
+
+    if frames%1800==0 then
+        if C4Pool.active>0 then
+            log('C4 read pool: active='..C4Pool.active..' live_reads='..C4Pool.reads())
+            C4Pool.report_probe()
+        end
+        if cfg.snapshot then pcall(runtime_snapshot) end
+        if cfg.snapshot then pcall(c4_snapshot) end
+        local top={}
+        for k,v in pairs(err_top) do top[#top+1]=k..'='..v end
+        table.sort(top,function(a,b) return tonumber(a:match('=(%d+)$'))>tonumber(b:match('=(%d+)$')) end)
+        local rehooks={}
+        for k,n in pairs(head_seen) do if n>=2 then rehooks[#rehooks+1]=k..' x'..n end end
+        if #rehooks>0 then log('rehooks: '..table.concat(rehooks,', ')) end
+        local avg_ms=stats.n>0 and stats.total/stats.n or 0
+        log(string.format('stats frames=%d calls=%d skipped=%d avg=%.2fms max=%.2fms skip=%d errors=%d top:%s',
+            frames,calls,skipped,avg_ms,stats.max,skip,
+            err_total,table.concat(top,',',1,math.min(3,#top))))
+        local perf=rawget(_G,'HD2Perf')
+        if type(perf)=='table' then
+            local rows={}
+            for k,v in pairs(perf) do
+                if type(v)=='table' and v.n and v.n>0 then
+                    rows[#rows+1]=string.format('%s=%.3fms',k,v.t*1000/v.n)
+                end
+            end
+            if #rows>0 then log('self-reported: '..table.concat(rows,', ')) end
+        end
+        calls,skipped=0,0
+        stats.max=0
+    end
+    if ok then return ... end
+end
+local function heartbeat(txt)
+    pcall(function()
+        local f=io.open(LOG..'.hb','a')
+        if f then f:write(os.date('!%H:%M:%S')..' '..txt..'\n') f:close() end
+    end)
+end
+local protection_head=nil
+
 wrapper=function(...)
     local nowf=os.clock()
     if cfg.c4_cpu_profile or C4CPU.running or C4CPU.completed then C4CPU.poll(nowf)end
@@ -2923,16 +3097,8 @@ wrapper=function(...)
     -- writer interdiction: full-chain walk every ~2s (must run BEFORE the
     -- adopt block: the adopt transition frame returns early and would
     -- otherwise skip frame-1 walks entirely)
-    do
-        local hb=function(txt)
-            pcall(function()
-                local f=io.open(LOG..'.hb','a')
-                if f then f:write(os.date('!%H:%M:%S')..' '..txt..'\n') f:close() end
-            end)
-        end
-        if frames==1 then hb('first frame; head_is_self='..tostring(rawget(_G,'update')==wrapper)) end
-        if frames%600==0 then hb('alive frames='..frames) end
-    end
+    if frames==1 then heartbeat('first frame; head_is_self='..tostring(rawget(_G,'update')==wrapper)) end
+    if frames%600==0 then heartbeat('alive frames='..frames) end
     if frames==1 then
         M.excluded_below=M.find_excluded_below()
         if cfg.snapshot then pcall(runtime_snapshot) end
@@ -2947,6 +3113,12 @@ wrapper=function(...)
     if frames%120==0 or frames==1 then
         local ok,err=pcall(wh_full_walk)
         if not ok then log('writer hold: walk ERROR: '..tostring(err)) end
+    end
+    local current_head=rawget(_G,'update')
+    if frames==1 or frames%120==0 or current_head~=protection_head then
+        protection_head=current_head
+        local ok,err=pcall(refresh_frame_protection)
+        if not ok then log('frame-critical discovery failed: '..tostring(err)) end
     end
     if frames==1 or frames%300==0 then
         local ok,err=pcall(C4Pool.discover,{rawget(_G,'update'),head_above,WH.entry,base_prev})
@@ -3064,39 +3236,7 @@ wrapper=function(...)
                 log('peer loader present (global MDL) - unmanaged by design; manual settings have priority')
             end
         end
-        local found=detect_ui_mods(cfg.ui_mods)
-        -- frame-critical chunk probe: HUD Ballistic Trajectory Overlay has
-        -- no _G marker, so scan the chain below us for its chunk (community
-        -- reports: throttling halves its draw rate when no UI mod is known)
-        if not M._fc_found and frames%600==0 then
-            local cur=base_prev
-            local d=0
-            while type(cur)=='function' and d<16 do
-                d=d+1
-                if cur==wrapper then cur=WH.entry or base_prev
-                else
-                    local cn=wh_chunk_of(cur)
-                    if cn:find('gun_calibration',1,true) then
-                        M._fc_found=true
-                        M._fc_source=cn
-                        log('frame-critical mod on chain (gun_calibration) - throttling suspended')
-                        break
-                    end
-                    cur=wh_next(cur)
-                end
-            end
-        end
-        if M._fc_found then found[#found+1]=M._fc_source or 'frame-critical mod' end
-        M.protected_sources=found
-        local now_ui=#found>0
-        if now_ui~=ui_present then
-            ui_present=now_ui
-            if now_ui then
-                log('UI mods present ('..table.concat(found,',')..') - throttling suspended to protect their panels')
-            else
-                log('no UI mods running - automatic throttling allowed (scanners will be curbed)')
-            end
-        end
+        pcall(refresh_frame_protection)
     end
     -- boot freeze: hold the entire chain until the engine is stable
     if cfg.boot_freeze_s and cfg.boot_freeze_s>0 then
@@ -3124,22 +3264,13 @@ wrapper=function(...)
     if not target then return end
     if not cfg.enabled then
         inside=true
-        local okv,r=pcall(function(...) return {target(...)} end,...)
-        inside=false
-        if not okv then
-            pcall(function()
-                local f=io.open(LOG..'.hb','a')
-                if f then f:write(os.date('!%H:%M:%S')..' chain error (disabled path): '..tostring(r)..'\n') f:close() end
-            end)
-            error(r,0)
-        end
-        if unpack then return unpack(r,1,#r) end
-        return
+        return complete_disabled(pcall(target,...))
     end
     -- Manual exclusions inside our target require a full-speed fallback;
     -- never skip or pause that callback along with the downstream chain.
     local manual_protection=M.excluded_below and #M.excluded_below>0
-    if manual_protection then paused_until=0 end
+    local frame_protection=manual_protection or ui_present==true
+    if frame_protection then paused_until=0 end
     -- circuit breaker gate
     local now=os.clock()
     if now<paused_until then
@@ -3153,7 +3284,7 @@ wrapper=function(...)
     local cap=1
     local want_throttle=(cfg.throttle=='yes') or (cfg.throttle=='auto' and ui_present~=true)
     if peer_active and cfg.peer_suspend then want_throttle=false end
-    if manual_protection then want_throttle=false end
+    if frame_protection then want_throttle=false end
     if want_throttle and settled(cfg.grace_s) then cap=skip end
     if cap>1 and frames%math.floor(cap)~=0 then
         skipped=skipped+1
@@ -3166,96 +3297,7 @@ wrapper=function(...)
     calls=calls+1
     local t0=os.clock()
     inside=true
-    local results={pcall(target,...)}
-    inside=false
-    local cost=(os.clock()-t0)*1000
-    if not results[1] then
-        pcall(function()
-            if M._lasterr~=tostring(results[2]) then
-                M._lasterr=tostring(results[2])
-                local f=io.open(LOG..'.hb','a')
-                if f then f:write(os.date('!%H:%M:%S')..' chain error: '..tostring(results[2])..'\n') f:close() end
-            end
-        end)
-        err_total=err_total+1
-        M.errors=err_total
-        local who=tostring(results[2]):match('HD2%-Addon:%s*(mods/[%w_/%-]+)') or 'unknown'
-        err_top[who]=(err_top[who] or 0)+1
-        if err_total<=10 or err_total%100==0 then
-            log('mod chain error #'..err_total..' ['..who..']: '..tostring(results[2]))
-        end
-    end
-    stats.n=stats.n+1
-    stats.total=stats.total+cost
-    w_total=w_total+cost; w_n=w_n+1
-    if frames-sample_mark>=300 then
-        sample_mark=frames
-        avg_hist[#avg_hist+1]=w_n>0 and w_total/w_n or 0
-        if #avg_hist>6 then table.remove(avg_hist,1) end
-        w_total,w_n=0,0
-    end
-    if cost>stats.max then stats.max=cost end
-    -- breaker accounting (mission scene only; menus are already throttled)
-    if cost>(cfg.trip_ms or 50) and settled(cfg.grace_s) and not manual_protection then
-        trips=trips+1
-        if trips>=(cfg.trip_n or 3) then
-            paused_until=os.clock()+(cfg.pause_s or 5)
-            log_paused=true
-            log(string.format('breaker OPEN: chain %.1fms x%d - pausing %ss',cost,trips,cfg.pause_s or 5))
-            trips=0
-        end
-    else
-        trips=0
-    end
-    -- adaptive skip only steers the mission/unknown case
-    local eff_ms=cfg.busy_ms or 12
-    if cfg.busy_pct and cfg.busy_pct>0 and fi_n>=120 then
-        local fi_ms=fi_t/math.max(1,fi_n)*1000
-        local pct_ms=fi_ms*cfg.busy_pct/100
-        if pct_ms>eff_ms then eff_ms=pct_ms end
-    end
-    if want_throttle then
-        if cost>eff_ms and settled(cfg.grace_s) then
-            if skip<(cfg.max_skip or 2) then skip=skip+1 log(string.format('throttle up: chain %.1fms -> skip=%d',cost,skip)) end
-        elseif cost<(cfg.idle_ms or 1.5) and skip>1 then
-            skip=skip-1
-            if skip==1 then log('throttle released: chain is cheap, running every frame') end
-        end
-    end
-
-    if frames%1800==0 then
-        if C4Pool.active>0 then
-            log('C4 read pool: active='..C4Pool.active..' live_reads='..C4Pool.reads())
-            C4Pool.report_probe()
-        end
-        if cfg.snapshot then pcall(runtime_snapshot) end
-        if cfg.snapshot then pcall(c4_snapshot) end
-        local top={}
-        for k,v in pairs(err_top) do top[#top+1]=k..'='..v end
-        table.sort(top,function(a,b) return tonumber(a:match('=(%d+)$'))>tonumber(b:match('=(%d+)$')) end)
-        local rehooks={}
-        for k,n in pairs(head_seen) do if n>=2 then rehooks[#rehooks+1]=k..' x'..n end end
-        if #rehooks>0 then log('rehooks: '..table.concat(rehooks,', ')) end
-        local avg_ms=stats.n>0 and stats.total/stats.n or 0
-        log(string.format('stats frames=%d calls=%d skipped=%d avg=%.2fms max=%.2fms skip=%d errors=%d top:%s',
-            frames,calls,skipped,avg_ms,stats.max,skip,
-            err_total,table.concat(top,',',1,math.min(3,#top))))
-        local perf=rawget(_G,'HD2Perf')
-        if type(perf)=='table' then
-            local rows={}
-            for k,v in pairs(perf) do
-                if type(v)=='table' and v.n and v.n>0 then
-                    rows[#rows+1]=string.format('%s=%.3fms',k,v.t*1000/v.n)
-                end
-            end
-            if #rows>0 then log('self-reported: '..table.concat(rows,', ')) end
-        end
-        calls,skipped=0,0
-        stats.max=0
-    end
-    if results[1] then
-        if unpack then return unpack(results,2,#results) end
-    end
+    return complete_chain(t0,want_throttle,frame_protection,pcall(target,...))
 end
 rawset(_G,'update',wrapper)
 log('installed v'..M.version..' as the outermost update wrapper (Bingus chain governor)')
