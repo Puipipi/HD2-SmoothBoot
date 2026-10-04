@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.38' then return old end
+if old and old.version=='3.0.39' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.38',status='starting'}
+local M={version='3.0.39',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -775,11 +775,40 @@ function M.snapshot(api,game,extend)
     local actual_reads,actual_bytes=0,0
     local validation_reads,validation_bytes=0,0
     local extension_result
+    local owner,extension_regions
     local function read(at,n,guard,prefetched)
         assert(type(at)=='number' and at>=65536 and at+n<0x800000000000,'invalid_address')
         reads=reads+1;bytes=bytes+n
         assert(n>0 and n<=4096 and reads<=768 and bytes<=32768,'snapshot_budget')
         local b=prefetched
+        -- The original ActionReader/ReloadReader obtains these template pointers
+        -- through e.ptr before its 16-byte probe loop. Batch only that declared
+        -- region during this extension call; never retain bytes for a later
+        -- snapshot, native action, or escaped e.read callback.
+        if b==nil and guard and n==16 and extension_regions then
+            for _,region in ipairs(extension_regions)do
+                local offset=at-region.at
+                if offset>=0 and offset<region.capacity*16 and offset%16==0 then
+                    local slot=offset/16
+                    if not region.individual and (not region.block or slot<region.slot or slot>=region.slot+region.count)then
+                        region.slot=slot
+                        region.count=math.min(16,region.capacity-slot,769-reads)
+                        local size=region.count*16
+                        if region.count>1 and at+size<0x800000000000 then
+                            actual_reads=actual_reads+1;actual_bytes=actual_bytes+size
+                            local ok,value=pcall(api.read,at,size)
+                            if ok and type(value)=='string' and #value==size then region.block=value
+                            else region.individual=true;region.block=nil end
+                        else region.individual=true;region.block=nil end
+                    end
+                    if region.block then
+                        local start=(slot-region.slot)*16
+                        b=region.block:sub(start+1,start+16)
+                    end
+                    break
+                end
+            end
+        end
         if b==nil then
             actual_reads=actual_reads+1;actual_bytes=actual_bytes+n
             b=api.read(at,n)
@@ -792,6 +821,23 @@ function M.snapshot(api,game,extend)
     local function ptr(at,guard)
         local p=assert(api.pointer(read(at,8,guard)),'pointer_unavailable')
         assert(p>=65536 and p<0x800000000000,'invalid_pointer')
+        if extension_regions and guard and owner then
+            local kind,capacity
+            if type(D.rounds_templates)=='number' and at==owner+D.rounds_templates then
+                kind,capacity='rounds',D.rounds_capacity
+            elseif type(D.reload_templates)=='number' and at==owner+D.reload_templates then
+                kind,capacity='reload',D.reload_capacity
+            end
+            if kind and type(capacity)=='number' and capacity>0 and capacity<=2048 and
+               capacity%1==0 and p+capacity*16<0x800000000000 then
+                -- Reading the pointer again begins a fresh scan, including when
+                -- both template families happen to share the same native range.
+                for i=#extension_regions,1,-1 do
+                    if extension_regions[i].kind==kind then table.remove(extension_regions,i)end
+                end
+                table.insert(extension_regions,1,{kind=kind,at=p,capacity=capacity})
+            end
+        end
         return p
     end
     local function global(rva) return ptr(game+rva,true) end
@@ -844,7 +890,7 @@ function M.snapshot(api,game,extend)
     if bit.band(player:byte(21),1)==0 then return finish('local_player_not_owned') end
     local unit=u32(read(pm+0x3a8,4,true),0)
     if unit==0x7fff then return finish('waiting_for_avatar') end
-    local owner=global(R.global_owner)
+    owner=global(R.global_owner)
     local ei=lookup(owner+D.entity_unit_map,unit,1048576)
     if not ei then return finish('avatar_map_missing') end
     assert(ei<262144,'entity_index_limit')
@@ -970,10 +1016,12 @@ function M.snapshot(api,game,extend)
 
 
 
+        extension_regions={}
         local ok,result=pcall(extend,{read=read,ptr=ptr,global=global,lookup=lookup,
             checked=checked,u32=u32,hex=hex,resource=resource,entity=entity,weapon=weapon,
             id=id,weapon_id=weapon_id,owner=owner,avatar=avatar,avatar_index=ai,
             weapon_data=wd,weapon_data_index=di},row)
+        extension_regions=nil
         if ok then
             extension_result=result;row.action_context_status='validated'
         else
@@ -2627,8 +2675,8 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.38: C4 template scans read fresh contiguous blocks; live acceptance pending.
-测试候选3.0.38：C4模板扫描合并读取连续项、每次读取最新数据，尚待实际游戏验收。
+Candidate 3.0.39: C4 rounds/reload template scans also read fresh blocks; live acceptance pending.
+测试候选3.0.39：C4弹药与装填模板也合并读取连续项、每次读取最新数据，尚待实际游戏验收。
 
 [Report an issue / 反馈问题]
   The game creates Collect-Logs.bat next to this README on first run
