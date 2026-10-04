@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.44' then return old end
+if old and old.version=='3.0.45' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.44',status='starting',init_started=os.clock()}
+local M={version='3.0.45',status='starting',init_started=os.clock()}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -2213,7 +2213,8 @@ end
 -- caller's upvalue to the writer's own previous, and spliced back after
 -- writer_hold_s. Their function is preserved (applied later, on a
 -- settled game); none of their state fields is ever touched.
-local WH={entry=nil,held={},walks=0,done_walking=false,head_swaps=0}
+local WH={entry=nil,held={},walks=0,done_walking=false,head_swaps=0,
+          gates=setmetatable({},{__mode='k'})}
 local last_call=os.clock()
 local fi_t,fi_n=0,0     -- rolling frame-interval (seconds, pre-declared for the release gate)
 local WH_NEXT_NAMES={'previous_update','original_update','previous','prev',
@@ -2265,16 +2266,18 @@ end
 -- writer gate: a closure we own, spliced into the writer's chain slot.
 -- Closed: calls the writer's next (bypass semantics - no scan, no write).
 -- Open:   calls the writer itself (normal semantics, function preserved).
--- Release is a single flag flip - immune to the watchdog spy storm that
--- rewrites every previous-slot in the chain. The captured 'previous_update'
--- name keeps our own descent walk able to pass through the gate.
-local function wh_make_gate(writer,nextfn)
+-- Release remains a flag flip. The previous_update slot is stable, including
+-- every profiler probe installed there. The owner-labelled source makes the
+-- delegated writer work visible to source-based profilers WITHOUT pretending
+-- this routing shell is the original callback. Its small forwarding overhead
+-- is included in the explicitly marked "[SB gate]" row; our governor retains
+-- its own SmoothBoot source and measurements. Never relabel the whole chain.
+local WH_GATE_SOURCE=[==[
+return function(writer,nextfn,writer_slot,log)
     local previous_update=nextfn
     -- Both gate states must share the same live downstream slot. A profiler
     -- instruments previous_update while the gate is closed; the original
     -- writer must also use that slot after release, rather than bypassing it.
-    local writer_next,writer_slot=wh_next(writer)
-    assert(writer_next==nextfn and writer_slot,'writer downstream slot missing')
     local function downstream(...) return previous_update(...) end
     debug.setupvalue(writer,writer_slot,downstream)
     local ctl={open=false}
@@ -2300,6 +2303,33 @@ local function wh_make_gate(writer,nextfn)
             return completed(pcall(writer,...))
         end
         return completed(pcall(previous_update,...))
+    end
+    return gate,ctl,downstream
+end
+]==]
+local function wh_make_gate(writer,nextfn)
+    local writer_next,writer_slot=wh_next(writer)
+    assert(writer_next==nextfn and writer_slot,'writer downstream slot missing')
+    local original_name=wh_chunk_of(writer)
+    local owner=original_name:gsub('%.lua$','')
+    assert(owner~='' and owner:find('mods/',1,true),'writer owner missing')
+    -- This compiles OUR routing code once per held writer, never foreign code.
+    -- No DLL/FFI hooks, debug.getinfo overrides or profiler tables are changed.
+    local factory=assert(loadstring(WH_GATE_SOURCE,'@'..owner..' [SB gate]'))()
+    local gate,ctl,downstream=factory(writer,nextfn,writer_slot,log)
+    -- Our own discovery keeps the exact original key (including .lua). The
+    -- visible adapter suffix must not turn an already-held writer into a new
+    -- writer on the next walk. No profiler/global metadata is overwritten.
+    chunk_cache[gate]=original_name
+    chunk_cache[downstream]=original_name
+    WH.gates[gate]=true
+    local j=rawget(_G,'jit')
+    if type(j)=='table' and type(j.off)=='function' then
+        -- A caller trace can inline this tiny helper and keep its old shared
+        -- previous_update cell even after a profiler edits the gate's slot.
+        -- Interpreter-only for THIS owned forwarding helper prevents that
+        -- bypass. No foreign function or global JIT setting is changed.
+        j.off(downstream)
     end
     return gate,ctl
 end
@@ -2898,6 +2928,8 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
+Candidate 3.0.45: writer hold gates now carry the delegated writer's name plus [SB gate] in source-based profilers. This identifies our routing shell, not a changed third-party file. Released writer work and the shell's forwarding overhead are charged to that row; SmoothBoot's governor keeps its own row. Profiler probes, callback results and release timing are preserved. No work is hidden or disabled to lower the displayed cost.
+候选3.0.45：写入保护门在按源码归属的性能面板中显示被托管模组名称及[SB gate]标记，明确表示这是我们的转发门，并非修改了第三方文件。释放后原模组的执行耗时与门本身的转发开销计入该行；SmoothBoot调度器仍保留独立一行。计时探针、回调返回值和释放时机保留；没有通过隐藏或禁用工作降低显示数值。
 Candidate 3.0.44 (bug-fix): the "cannot splice" note now distinguishes the two causes. If the wrapper above keeps no function upvalue as its previous hook, replacing hooks at runtime is why it sits above us and mod order cannot change that; the old wording told users to reorder a list that was already correct.
 候选3.0.44（修复版）：把“无法插入”的提示分成两种真实原因。若上方包装层没有用函数 upvalue 保存上一个钩子，那是它运行期重包导致的，调整顺序也没用；旧文案会误导用户去改一个本来就正确的顺序。
 Candidate 3.0.43 (bug-fix): collector exclude picker ignores "config check" lines; the config-check warning no longer contains the words "chain inventory"; the shipped LTE default explains itself and how to remove it; chain inventory is re-logged when it changes and unmanaged sources are listed separately; "rehooks" is logged once per source with an above-SmoothBoot note; the load-order hint is printed on the first frame.
@@ -3385,7 +3417,10 @@ wrapper=function(...)
         head_above=nil
         log('adopted head moved above SmoothBoot; using its existing call chain')
     end
-    if head~=wrapper then
+    if head~=wrapper and not WH.gates[head] then
+        -- A writer gate is our own routing, even though its visible label
+        -- names the delegated work. Adopting it as a new foreign head would
+        -- make gate -> governor -> gate recurse and lose callback results.
         local who=identify(head)
         if who then
             head_seen[who]=(head_seen[who] or 0)+1

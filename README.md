@@ -1,6 +1,16 @@
 # HD2 SmoothBoot
 
-当前开发候选 **3.0.41** 扩展 HUD 自动识别：只读 LuaJIT 函数元数据中的实际绘图字段访问、闭包持有的绘图接口以及模组 render 回调，不依赖新模组的名称。首次更新、更新或绘制链头变化及周期巡检触发发现；不可变元数据只解析一次。没有全局绘图钩子，也不会为识别而执行第三方代码或绘图接口。
+当前开发候选 **3.0.45** 修正写入保护门的性能归属：按源码归属的性能面板会将门显示为“被托管模组名称 [SB gate]”，把原模组工作及少量转发开销计入这行，Smooth 调度器保留独立一行。标签明确区分我们的代理与第三方原回调，没有修改第三方文件或 Watchdog，也没有关闭计时来降低数值。
+
+保持原有探针和释放方式；只让我们自己的小转发函数不被 JIT 内联缓存，避免后来插入的探针被绕过。避免将自己的保护门误当新模组重新接管。现代 LuaJIT 和独立游戏 Lua 库的实际 Watchdog 源码对照通过：原先误算到 Smooth 的合成 79.09 ms/s 已分回具体模组，总耗时和回调次数保持一致。这不是实际游戏性能收益，**实机启动验收待部署后完成**。
+
+工具生成路径保持 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\Collect-Logs.bat`，与 `config.txt` 同目录。用户已确认文件存在；打包 ZIP 和排除名单合并的隔离检查通过。安装 ZIP 仍不含裸 BAT。
+
+Development candidate **3.0.45** makes held-writer ownership explicit in source-based profilers as `writer name [SB gate]`. The row includes the original writer's work and the routing shell's small overhead; the governor retains its own SmoothBoot row. Profiler probes, results and release policies stay intact. Only our forwarding helper is kept interpreted to prevent JIT inlining from bypassing later probes. No foreign files or Watchdog tables are changed. Deterministic replay with unchanged Watchdog source in both LuaJIT runtimes preserves total work and callback counts while moving synthetic 79.09 ms/s back to its owners. **Live startup acceptance remains pending.** The companion tool still appears beside config.txt, not in Arsenal's library.
+
+以下保留历史候选记录。
+
+候选 **3.0.41** 扩展 HUD 自动识别：只读 LuaJIT 函数元数据中的实际绘图字段访问、闭包持有的绘图接口以及模组 render 回调，不依赖新模组的名称。首次更新、更新或绘制链头变化及周期巡检触发发现；不可变元数据只解析一次。没有全局绘图钩子，也不会为识别而执行第三方代码或绘图接口。
 
 常见 GUI/LineObject 绘制被识别后，所在链条保留逐帧更新。**仍是整链保护；特殊或动态绘制无法保证全部识别，排除名单仍可使用。** 同时修正更新总线里排除项被误报为未安装的问题，保留旧的输入/UI 保护。
 
