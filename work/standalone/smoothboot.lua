@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.43' then return old end
+if old and old.version=='3.0.44' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.43',status='starting',init_started=os.clock()}
+local M={version='3.0.44',status='starting',init_started=os.clock()}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -2898,6 +2898,8 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
+Candidate 3.0.44 (bug-fix): the "cannot splice" note now distinguishes the two causes. If the wrapper above keeps no function upvalue as its previous hook, replacing hooks at runtime is why it sits above us and mod order cannot change that; the old wording told users to reorder a list that was already correct.
+候选3.0.44（修复版）：把“无法插入”的提示分成两种真实原因。若上方包装层没有用函数 upvalue 保存上一个钩子，那是它运行期重包导致的，调整顺序也没用；旧文案会误导用户去改一个本来就正确的顺序。
 Candidate 3.0.43 (bug-fix): collector exclude picker ignores "config check" lines; the config-check warning no longer contains the words "chain inventory"; the shipped LTE default explains itself and how to remove it; chain inventory is re-logged when it changes and unmanaged sources are listed separately; "rehooks" is logged once per source with an above-SmoothBoot note; the load-order hint is printed on the first frame.
 候选3.0.43（修复版）：bat 排除选择器不再被 "config check" 行干扰；配置检查提示不再包含 "chain inventory" 字样；自带 LTE 默认项会说明自身及删除方法；链清单变化时重新打印，并单独列出无法托管的来源；"rehooks" 每个来源只提示一次并说明是否在 SmoothBoot 之上；首帧直接提示加载顺序问题。
 Candidate 3.0.42 (diagnostic): self-timings of the wrapper sections outside the chain call, to settle the opening-cost attribution question.
@@ -3006,6 +3008,15 @@ Game functionality and reported cost regressions still require live acceptance.
   mod wraps the chain above it, the first-frame line says so and lists the head.
   / 加载顺序：SmoothBoot 必须在最底部（优先级最低）。若有模组在它上面包住链，
   首帧日志会直接写出链头名字并提示调整顺序。
+  Self re-heading only works when the newcomer keeps us in a function upvalue.
+  A mod that re-wraps update at runtime and stores its previous hook elsewhere
+  (table field, native callback, its own timer) CANNOT be spliced without
+  risking its chain: SmoothBoot deliberately leaves it above and says why.
+  Putting SmoothBoot lower cannot change that case - the log names the reason.
+  / 自我重接管只在“后来者把我们保存在函数 upvalue 里”时有效。若某个模组在运行期
+  重包 update，并把上一个钩子存在别处（表字段、原生回调、自己的计时器），硬插进去
+  就可能弄坏它的链条，所以我们宁可让它待在上面并写明原因；这种情况下再怎么调整
+  顺序也没用，日志会直接告诉你属于哪一种。
 
 [About Mod Lag Watchdog / 关于 watchdog]
   It may report "hooking more than once: smoothboot xN" - that is expected
@@ -3335,7 +3346,7 @@ wrapper=function(...)
             if ok then who=(r:match('mods/[%w_./%-]+') or r:sub(1,40)) end
         else who='self' end
         log('first frame reached, head='..who..
-            (who=='self' and '' or ' (SmoothBoot is not the outermost wrapper - move it to the bottom of the mod list so it can manage the whole chain)'))
+            (who=='self' and '' or ' (another mod wraps the chain above SmoothBoot right now; everything below it stays managed - the next note says whether mod order can change that)'))
     end
     if frames%120==0 or frames==1 then
         local d0=os.clock()
@@ -3431,7 +3442,25 @@ wrapper=function(...)
             else
                 if not announced['<noslice:'..who..'>'] then
                     announced['<noslice:'..who..'>']=true
-                    log('cannot splice '..who..' (no upvalue to us); leaving it as head, unmanaged')
+                    -- 3.0.43: whether reordering can help depends on WHY we could
+                    -- not splice. If the head keeps some other function as its
+                    -- previous hook, another wrapper sits between us and putting
+                    -- SmoothBoot last fixes it. If it keeps no function upvalue at
+                    -- all (the previous hook lives in a table field), mod order
+                    -- cannot change anything and we must say so, not send the user
+                    -- to reorder a list that is already correct.
+                    local has_prev=false
+                    local idx2=1
+                    while true do
+                        local k,v=debug.getupvalue(head,idx2)
+                        if not k then break end
+                        if type(v)=='function' then has_prev=true end
+                        idx2=idx2+1
+                    end
+                    log('cannot splice '..who..' (its wrapper keeps no upvalue pointing at us) - '..
+                        (has_prev and 'another wrapper sits between SmoothBoot and it: put SmoothBoot last in the mod list to wrap the whole chain'
+                                  or 'its previous hook is not held as a function upvalue, so mod order cannot put SmoothBoot above it')..
+                        '; everything below SmoothBoot stays managed')
                 end
             end
         elseif not announced['<max-adopt>'] then

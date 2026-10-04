@@ -193,6 +193,36 @@ class RuntimeTools(unittest.TestCase):
             self.assertNotIn('chain inventory', warning,
                              'a config-check line still mentions the inventory line')
 
+    def test_unspliceable_head_reports_the_real_reason(self):
+        """A later wrapper can only be adopted when it keeps us in a function
+        upvalue. If its previous hook lives somewhere else, reordering the mod
+        list cannot help, so the log must say that instead of blaming the order
+        (a user reported SmoothBoot being at the bottom already)."""
+        with tempfile.TemporaryDirectory(prefix='sb-head-') as tmp:
+            root = pathlib.Path(tmp)
+            runtime = start(root)
+            runtime.execute(r'''
+                ours = update
+                -- previous hook kept in a table field: no function upvalue at all
+                local boxed = assert(loadstring(
+                    "local box = ...; return function(...) return box.prev(...) end",
+                    "@mods/test/fake_head.lua"))({prev = update})
+                -- previous hook is a function, but a different one (another wrapper
+                -- sits between us), so the order advice still applies
+                local dummy = function() end
+                local chained = assert(loadstring(
+                    "local prev = ...; return function(...) return prev(...) end",
+                    "@mods/test/fake_mid.lua"))(dummy)
+                rawset(_G, 'update', boxed);   ours(0.016)
+                rawset(_G, 'update', chained); ours(0.016)
+            ''')
+            log = (root / 'CowboyBingus/Helldivers2/Logs/SmoothBoot.log').read_text(encoding='utf-8')
+            self.assertIn('mods/test/fake_head', log)
+            self.assertIn('its previous hook is not held as a function upvalue', log,
+                          'a table-held previous hook must not be blamed on the mod order')
+            self.assertIn('another wrapper sits between SmoothBoot and it', log,
+                          'a function-valued previous hook should still suggest the load order')
+
 
 if __name__ == '__main__':
     unittest.main()
