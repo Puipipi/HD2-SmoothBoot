@@ -33,7 +33,7 @@ mods/... → 你的 HUD 模组 → 另一个模组 → SmoothBoot（调度器）
 ## 安装
 
 1. 需要 API 1 加载器：**MDL 1.4.4+** 或 **Bingus Shared Loader v15+**。
-2. 从 [Releases](https://github.com/YC426/HD2-SmoothBoot/releases) 下载 `HD2-SmoothBoot-3.0.45.zip`，
+2. 从 [Releases](https://github.com/Puipipi/HD2-SmoothBoot/releases) 下载 `HD2-SmoothBoot-3.0.45.zip`，
    导入模组管理器（HD2 Arsenal、MDL 等）。**不要**用 GitHub 自动生成的 *Source code* ZIP，那不是可安装的 addon。
 3. **只启用一个** SmoothBoot，并把它放在模组列表**最底部**（最低优先级），这样它才能包住整条链。
 4. 部署。配置位于 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\config.txt`，

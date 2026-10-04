@@ -40,7 +40,7 @@ multiplayer.
 
 1. Needs an API 1 loader: **MDL 1.4.4+** or **Bingus Shared Loader v15+**.
 2. Download `HD2-SmoothBoot-3.0.45.zip` from
-   [Releases](https://github.com/YC426/HD2-SmoothBoot/releases) and import it into
+   [Releases](https://github.com/Puipipi/HD2-SmoothBoot/releases) and import it into
    your mod manager (HD2 Arsenal, MDL, …). **Do not** use GitHub's auto-generated
    *Source code* ZIP — it is not an installable addon.
 3. Enable **one** SmoothBoot only, and put it **at the bottom of the mod list**
