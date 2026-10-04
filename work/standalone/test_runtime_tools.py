@@ -137,6 +137,62 @@ class RuntimeTools(unittest.TestCase):
             effective=re.findall(r'^exclude=(.*)$',(folder/'config.txt').read_text(encoding='utf-8-sig'),re.M)[-1].split(',')
             self.assertEqual(set(effective),{'lte/helmet_cape_passives','mods/test/extensionless'})
 
+    def test_picker_ignores_config_check_line(self):
+        """Reported by a user on 3.0.22: the config-check warning mentioned the
+        words "chain inventory", so the collector's last-match picker selected the
+        warning instead of the inventory and the exclude picker found no mods.
+        Logs written by that version still contain the old wording, so the picker
+        must skip "config check" lines regardless of what the warning says."""
+        with tempfile.TemporaryDirectory(prefix='sb-tools-') as tmp:
+            root = pathlib.Path(tmp)
+            start(root)
+            folder = root / 'CowboyBingus/Helldivers2/SmoothBoot'
+            config = folder / 'config.txt'
+            config.write_text('exclude=lte/helmet_cape_passives\n', encoding='utf-8')
+            logs = root / 'CowboyBingus/Helldivers2/Logs'
+            logs.mkdir(parents=True, exist_ok=True)
+            (logs / 'SmoothBoot.log').write_text(
+                '2026-10-04T04:32:53Z first frame reached, head=mods/patpatpatrick/mod_lag_finder.lua\n'
+                '2026-10-04T04:32:53Z chain inventory (copy fragments for exclude=/writers=): '
+                'mods/patpatpatrick/mod_lag_finder.lua, mods/codex/player_dismember_off.lua\n'
+                '2026-10-04T04:32:53Z config check: "lte/helmet_cape_passives" matched no mod on the chain '
+                '(fragments must match the names in the chain inventory line)\n'
+                '2026-10-04T04:32:53Z config check: writers fragment(s) not on chain (mod not installed?): k9_p\n',
+                encoding='utf-8')
+            command = re.search(r'powershell -NoProfile -Command "(.*)"',
+                                (folder / 'Collect-Logs.bat').read_text(encoding='utf-8')).group(1)
+            answers = ("$script:answers=@('E','1'); $script:answer=0; "
+                       "function Read-Host { $r=$script:answers[$script:answer]; $script:answer++; return $r }; ")
+            result = subprocess.run(['powershell.exe', '-NoProfile', '-Command', answers + command],
+                                    env=dict(os.environ, LOCALAPPDATA=str(root)),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('mod_lag_finder', result.stdout, 'picker did not offer the real inventory entry')
+            effective = re.findall(r'^exclude=(.*)$', config.read_text(encoding='utf-8-sig'), re.M)[-1].split(',')
+            self.assertTrue(any('mod_lag_finder' in entry for entry in effective),
+                            'the picked mod was not written to exclude= (picked the warning line instead?)')
+
+    def test_unmatched_fragment_message_is_actionable(self):
+        """The shipped LTE default is inert when that mod is absent; the log must
+        say what it is and how to remove it instead of sounding like an error."""
+        with tempfile.TemporaryDirectory(prefix='sb-frag-') as tmp:
+            root = pathlib.Path(tmp)
+            runtime = start(root)
+            runtime.execute("HD2SmoothBoot.discovered_sources={'mods/test/other.lua'}")
+            runtime.globals().HD2SmoothBoot.frag_check()
+            log = (root / 'CowboyBingus/Helldivers2/Logs/SmoothBoot.log').read_text(encoding='utf-8')
+            self.assertIn('shipped default "lte/helmet_cape_passives" is not on this chain', log)
+            self.assertNotIn('chain inventory line', log)
+
+    def test_config_check_warning_cannot_be_confused_with_inventory(self):
+        """Defence in depth: the shipped warning must never contain the literal
+        phrase the collector filters on, whatever the collector does."""
+        warnings = re.findall(r"log\('config check:.*?'\)", SOURCE, re.S)
+        self.assertTrue(warnings, 'no config-check warning found in the source')
+        for warning in warnings:
+            self.assertNotIn('chain inventory', warning,
+                             'a config-check line still mentions the inventory line')
+
 
 if __name__ == '__main__':
     unittest.main()

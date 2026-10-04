@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.41' then return old end
+if old and old.version=='3.0.43' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.41',status='starting',init_started=os.clock()}
+local M={version='3.0.43',status='starting',init_started=os.clock()}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -2672,6 +2672,30 @@ local function wh_full_walk()
     WH.walks=(WH.walks or 0)+1
     if WH.walks==1 and WH.inventory then
         log('chain inventory (copy fragments for exclude=/writers=): '..WH.inventory)
+        WH.inventory_logged=WH.inventory
+    elseif WH.inventory and WH.inventory~=WH.inventory_logged then
+        -- 3.0.43: mods that join the chain later (or that re-hook) must show up
+        -- too, otherwise users cannot copy their fragment from the log.
+        WH.inventory_logged=WH.inventory
+        log('chain inventory changed (copy fragments for exclude=/writers=): '..WH.inventory)
+    end
+    if WH.inventory and M.discovered_sources then
+        -- Names we can see but cannot schedule. Printing them separately stops
+        -- "why is my mod missing from the inventory / why does exclude= do
+        -- nothing" reports: a source above our wrapper, or one that is not on
+        -- the update chain at all, can never be excluded.
+        local unmanaged={}
+        for _,name in ipairs(M.discovered_sources) do
+            if name~='' and not WH.inventory:find(name,1,true) and not name:find('smoothboot',1,true) then
+                unmanaged[#unmanaged+1]=name
+            end
+        end
+        table.sort(unmanaged)
+        local signature=table.concat(unmanaged,',')
+        if signature~='' and signature~=WH.unmanaged_logged then
+            WH.unmanaged_logged=signature
+            log('chain sources NOT managed (above SmoothBoot or outside the update chain; exclude= cannot affect these): '..signature)
+        end
     end
     M.frag_check()
     if caught>0 then
@@ -2724,14 +2748,23 @@ function M.frag_check()
                 if individual then
                     local hint = ''
                     local stem = frag:sub(1, 4):lower()
-                    for name in WH.inventory:gmatch('[%w_./%-]+%.lua') do
+                    for name in (WH.inventory or ''):gmatch('[%w_./%-]+%.lua') do
                         if #frag >= 4 and name:lower():find(stem, 1, true) then
                             hint = ' - did you mean "' .. (name:match('([^/]+)%.lua') or name) .. '"?'
                             break
                         end
                     end
-                    log('config check: "' .. frag .. '" matched no mod on the chain' .. hint ..
-                        ' (fragments must match the names in the chain inventory line)')
+                    if frag=='lte/helmet_cape_passives' then
+                        -- shipped default: say what it is and how to remove it,
+                        -- instead of sounding like a broken setting
+                        log('config check: shipped default "lte/helmet_cape_passives" is not on this chain (that mod is not installed)'
+                            .. ' - delete that entry from exclude= in config.txt if you do not use it')
+                    else
+                        -- 3.0.43: never spell "chain inventory" in a warning; the
+                        -- collector used to pick the line that merely mentioned it
+                        log('config check: "' .. frag .. '" matched no mod on the chain' .. hint ..
+                            ' (the fragment must match one of the discovered source names)')
+                    end
                 end
             end
         end
@@ -2833,6 +2866,12 @@ if cfg.gc_stepmul and cfg.gc_stepmul>0 then
 end
 local skip=1
 local stats={n=0,total=0,max=0}
+-- 3.0.42 diagnostic: per-window self-timing of everything the wrapper does
+-- OUTSIDE the chain call (walk, discovery, 10s config poll). The Watchdog
+-- attributes the whole wrapper frame to us, so this is what decides whether an
+-- opening row of ~357 ms/s is our work or attribution.
+local diag2={pre=0,pre_max=0,n=0,walk=0,disc=0,poll=0,chain0=0,start=os.clock()}
+diag2.chain0=stats.total
 local err_top={}          -- modname -> count
 local err_total=0
 local last_cfg=os.clock()
@@ -2859,6 +2898,10 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
+Candidate 3.0.43 (bug-fix): collector exclude picker ignores "config check" lines; the config-check warning no longer contains the words "chain inventory"; the shipped LTE default explains itself and how to remove it; chain inventory is re-logged when it changes and unmanaged sources are listed separately; "rehooks" is logged once per source with an above-SmoothBoot note; the load-order hint is printed on the first frame.
+候选3.0.43（修复版）：bat 排除选择器不再被 "config check" 行干扰；配置检查提示不再包含 "chain inventory" 字样；自带 LTE 默认项会说明自身及删除方法；链清单变化时重新打印，并单独列出无法托管的来源；"rehooks" 每个来源只提示一次并说明是否在 SmoothBoot 之上；首帧直接提示加载顺序问题。
+Candidate 3.0.42 (diagnostic): self-timings of the wrapper sections outside the chain call, to settle the opening-cost attribution question.
+候选3.0.42（诊断版）：为包装层中“链条调用之外”的各段加入自计时，用于判定开局开销到底是不是我们的。
 Candidate 3.0.41: detects common drawing field accesses, captured graphics APIs and mod render hooks.
 候选3.0.41：自动识别常见绘图接口、闭包引用与模组render回调，无需逐个添加名称。
 Metadata is read only and cached; no foreign callback or graphics API is invoked by discovery.
@@ -2954,6 +2997,15 @@ Game functionality and reported cost regressions still require live acceptance.
   lists every mod's exact name - copy any unique piece. If you mistype one,
   the log will say: config check: ... did you mean "..."?
   / 片段来自 SmoothBoot.log 里的 "chain inventory" 行；填错时日志会提示正确名称。
+  Only sources reachable on the update chain can be listed or excluded. A mod
+  that hooks the engine elsewhere (menus, native render, its own timer) can be
+  neither scheduled nor excluded; the log prints those as "NOT managed".
+  / 只有 update 链上够得到的模组才能被列出或排除；挂在别处（菜单、原生渲染、
+  自己的计时器）的模组既不能被调度也不能被排除，日志会用 "NOT managed" 标出。
+  Load order: SmoothBoot must be the bottom (lowest priority) entry. If another
+  mod wraps the chain above it, the first-frame line says so and lists the head.
+  / 加载顺序：SmoothBoot 必须在最底部（优先级最低）。若有模组在它上面包住链，
+  首帧日志会直接写出链头名字并提示调整顺序。
 
 [About Mod Lag Watchdog / 关于 watchdog]
   It may report "hooking more than once: smoothboot xN" - that is expected
@@ -2973,7 +3025,7 @@ if not errorlevel 1 (
   pause
   exit /b 1
 )
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $base=Join-Path $env:LOCALAPPDATA 'CowboyBingus\Helldivers2'; $stage=$null; try { $mode=Read-Host 'Collect logs (C) / Exclude a mod (E)'; if ($mode -eq 'E') { $log=Join-Path $base 'Logs\SmoothBoot.log'; if (-not (Test-Path -LiteralPath $log)) { throw 'No SmoothBoot.log. Start the game once first.' }; $inv=Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object {$_ -match 'chain inventory'} | Select-Object -Last 1; if (-not $inv) { throw 'No chain inventory yet. Let initialization finish first.' }; $names=$inv -replace '^.*chain inventory[^:]*:',''; $mods=@($names -split ',\s*' | ForEach-Object {$_.Trim()} | Where-Object {$_ -match '^mods/[\w./-]+$' -and $_ -notmatch 'smoothboot|^mods/mdl/'} | Select-Object -Unique); if ($mods.Count -eq 0) { throw 'No manageable mods in the inventory.' }; for($i=0; $i -lt $mods.Count; $i++) { Write-Host (' {0,2}. {1}' -f ($i+1),$mods[$i]) }; $n=Read-Host 'Mod NUMBER (0 = cancel)'; $idx=0; if (-not [int]::TryParse($n,[ref]$idx) -or $idx -lt 0 -or $idx -gt $mods.Count) { throw 'Invalid mod number.' }; if ($idx -gt 0) { $frag=$mods[$idx-1] -replace '\.lua$',''; $cfg=Join-Path $base 'SmoothBoot\config.txt'; $cur=@(); if (Test-Path -LiteralPath $cfg) { $cur=@(Get-Content -LiteralPath $cfg -Encoding UTF8) }; $existing=@($cur | Where-Object {$_ -match '^\s*exclude\s*='} | Select-Object -Last 1); $values=@(); if($existing.Count) { $values=@(($existing[0] -replace '^\s*exclude\s*=\s*','') -split ',' | ForEach-Object {$_.Trim()} | Where-Object {$_}) }; $values=@(@($values)+@($frag) | Select-Object -Unique); $kept=@($cur | Where-Object {$_ -notmatch '^\s*exclude\s*='}); $updated=@($kept)+@('exclude='+($values -join ',')); [IO.File]::WriteAllLines($cfg,$updated,(New-Object Text.UTF8Encoding($false))); Write-Host ('DONE: exclude='+($values -join ',')); Write-Host 'To undo, remove only this mod from the exclude= list.'; }; } elseif ($mode -eq 'C') { if (-not (Test-Path -LiteralPath $base)) { throw 'No mod log directory. Start the game with SmoothBoot enabled first.' }; $desktop=[Environment]::GetFolderPath('Desktop'); if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { $desktop=Join-Path $base 'SmoothBoot' }; $zip=Join-Path $desktop ('SmoothBoot-logs-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+([guid]::NewGuid().ToString('N').Substring(0,6))+'.zip'); $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()); $stage=Join-Path $tempRoot ('SmoothBoot-collect-'+[guid]::NewGuid().ToString('N')); [void][IO.Directory]::CreateDirectory($stage); foreach($group in @('Logs','SmoothBoot')) { $from=Join-Path $base $group; $to=Join-Path $stage $group; [void][IO.Directory]::CreateDirectory($to); if (Test-Path -LiteralPath $from) { Get-ChildItem -LiteralPath $from -File | Where-Object {$_.Extension -in @('.log','.hb','.txt','.bat')} | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $to }; }; }; $diag=Join-Path $stage 'Diagnostics'; [void][IO.Directory]::CreateDirectory($diag); $extra=@((Join-Path $env:APPDATA 'Arrowhead\Helldivers2\mod_lag_finder.log'),(Join-Path $env:LOCALAPPDATA 'MDL\Helldivers2\MDL.cfg'),(Join-Path $env:LOCALAPPDATA 'MDL\Helldivers2\MDL.log')); foreach($file in $extra) { if(Test-Path -LiteralPath $file -PathType Leaf) { Copy-Item -LiteralPath $file -Destination $diag } }; $crashPath=Join-Path $stage 'crashes.txt'; try { $crash=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000} -MaxEvents 120 -ErrorAction Stop | Where-Object {$_.Message -match 'helldivers'} | ForEach-Object { '{0} {1}' -f $_.TimeCreated,($_.Message -replace '\s+',' ') }); if (-not $crash.Count) {$crash=@('No matching crash records.')}; $crash | Set-Content -LiteralPath $crashPath -Encoding UTF8; } catch { ('Crash records unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath $crashPath -Encoding UTF8 }; $modsRoot=Join-Path $env:LOCALAPPDATA 'hd2arsenal\mods'; $rows=@(); if(Test-Path -LiteralPath $modsRoot) { $rows=@(Get-ChildItem -LiteralPath $modsRoot -Directory | ForEach-Object { $_.Name }) }; $rows | Set-Content -LiteralPath (Join-Path $stage 'modlist.txt') -Encoding UTF8; $db=Join-Path $env:LOCALAPPDATA 'hd2arsenal\hd2a_data.json'; if(Test-Path -LiteralPath $db) { try { $data=Get-Content -LiteralPath $db -Raw -Encoding UTF8 | ConvertFrom-Json; $data.modsList.default.mods | Select-Object label,enabled,deployed | Export-Csv -LiteralPath (Join-Path $stage 'mod-status.csv') -NoTypeInformation -Encoding UTF8; } catch { ('Mod status unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath (Join-Path $stage 'mod-status-error.txt') -Encoding UTF8 }; }; Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip; if(-not (Test-Path -LiteralPath $zip)) { throw 'Log ZIP was not created.' }; Write-Host ('Done: '+$zip); } else { throw 'Choose C or E.' }; } catch { Write-Host ('FAILED: '+$_.Exception.Message); exit 1 } finally { if($stage -and (Test-Path -LiteralPath $stage)) { $resolved=[IO.Path]::GetFullPath($stage); if($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved) -match '^SmoothBoot-collect-[0-9a-f]{32}$') { [IO.Directory]::Delete($resolved,$true) } } }"
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $base=Join-Path $env:LOCALAPPDATA 'CowboyBingus\Helldivers2'; $stage=$null; try { $mode=Read-Host 'Collect logs (C) / Exclude a mod (E)'; if ($mode -eq 'E') { $log=Join-Path $base 'Logs\SmoothBoot.log'; if (-not (Test-Path -LiteralPath $log)) { throw 'No SmoothBoot.log. Start the game once first.' }; $inv=Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object {$_ -match 'chain inventory' -and $_ -notmatch 'config check'} | Select-Object -Last 1; if (-not $inv) { throw 'No chain inventory yet. Let initialization finish first.' }; $names=$inv -replace '^.*chain inventory[^:]*:',''; $mods=@($names -split ',\s*' | ForEach-Object {$_.Trim()} | Where-Object {$_ -match '^mods/[\w./-]+$' -and $_ -notmatch 'smoothboot|^mods/mdl/'} | Select-Object -Unique); if ($mods.Count -eq 0) { throw 'No manageable mods in the inventory.' }; for($i=0; $i -lt $mods.Count; $i++) { Write-Host (' {0,2}. {1}' -f ($i+1),$mods[$i]) }; $n=Read-Host 'Mod NUMBER (0 = cancel)'; $idx=0; if (-not [int]::TryParse($n,[ref]$idx) -or $idx -lt 0 -or $idx -gt $mods.Count) { throw 'Invalid mod number.' }; if ($idx -gt 0) { $frag=$mods[$idx-1] -replace '\.lua$',''; $cfg=Join-Path $base 'SmoothBoot\config.txt'; $cur=@(); if (Test-Path -LiteralPath $cfg) { $cur=@(Get-Content -LiteralPath $cfg -Encoding UTF8) }; $existing=@($cur | Where-Object {$_ -match '^\s*exclude\s*='} | Select-Object -Last 1); $values=@(); if($existing.Count) { $values=@(($existing[0] -replace '^\s*exclude\s*=\s*','') -split ',' | ForEach-Object {$_.Trim()} | Where-Object {$_}) }; $values=@(@($values)+@($frag) | Select-Object -Unique); $kept=@($cur | Where-Object {$_ -notmatch '^\s*exclude\s*='}); $updated=@($kept)+@('exclude='+($values -join ',')); [IO.File]::WriteAllLines($cfg,$updated,(New-Object Text.UTF8Encoding($false))); Write-Host ('DONE: exclude='+($values -join ',')); Write-Host 'To undo, remove only this mod from the exclude= list.'; }; } elseif ($mode -eq 'C') { if (-not (Test-Path -LiteralPath $base)) { throw 'No mod log directory. Start the game with SmoothBoot enabled first.' }; $desktop=[Environment]::GetFolderPath('Desktop'); if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { $desktop=Join-Path $base 'SmoothBoot' }; $zip=Join-Path $desktop ('SmoothBoot-logs-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+([guid]::NewGuid().ToString('N').Substring(0,6))+'.zip'); $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()); $stage=Join-Path $tempRoot ('SmoothBoot-collect-'+[guid]::NewGuid().ToString('N')); [void][IO.Directory]::CreateDirectory($stage); foreach($group in @('Logs','SmoothBoot')) { $from=Join-Path $base $group; $to=Join-Path $stage $group; [void][IO.Directory]::CreateDirectory($to); if (Test-Path -LiteralPath $from) { Get-ChildItem -LiteralPath $from -File | Where-Object {$_.Extension -in @('.log','.hb','.txt','.bat')} | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $to }; }; }; $diag=Join-Path $stage 'Diagnostics'; [void][IO.Directory]::CreateDirectory($diag); $extra=@((Join-Path $env:APPDATA 'Arrowhead\Helldivers2\mod_lag_finder.log'),(Join-Path $env:LOCALAPPDATA 'MDL\Helldivers2\MDL.cfg'),(Join-Path $env:LOCALAPPDATA 'MDL\Helldivers2\MDL.log')); foreach($file in $extra) { if(Test-Path -LiteralPath $file -PathType Leaf) { Copy-Item -LiteralPath $file -Destination $diag } }; $crashPath=Join-Path $stage 'crashes.txt'; try { $crash=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000} -MaxEvents 120 -ErrorAction Stop | Where-Object {$_.Message -match 'helldivers'} | ForEach-Object { '{0} {1}' -f $_.TimeCreated,($_.Message -replace '\s+',' ') }); if (-not $crash.Count) {$crash=@('No matching crash records.')}; $crash | Set-Content -LiteralPath $crashPath -Encoding UTF8; } catch { ('Crash records unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath $crashPath -Encoding UTF8 }; $modsRoot=Join-Path $env:LOCALAPPDATA 'hd2arsenal\mods'; $rows=@(); if(Test-Path -LiteralPath $modsRoot) { $rows=@(Get-ChildItem -LiteralPath $modsRoot -Directory | ForEach-Object { $_.Name }) }; $rows | Set-Content -LiteralPath (Join-Path $stage 'modlist.txt') -Encoding UTF8; $db=Join-Path $env:LOCALAPPDATA 'hd2arsenal\hd2a_data.json'; if(Test-Path -LiteralPath $db) { try { $data=Get-Content -LiteralPath $db -Raw -Encoding UTF8 | ConvertFrom-Json; $data.modsList.default.mods | Select-Object label,enabled,deployed | Export-Csv -LiteralPath (Join-Path $stage 'mod-status.csv') -NoTypeInformation -Encoding UTF8; } catch { ('Mod status unavailable: '+$_.Exception.Message) | Set-Content -LiteralPath (Join-Path $stage 'mod-status-error.txt') -Encoding UTF8 }; }; Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip; if(-not (Test-Path -LiteralPath $zip)) { throw 'Log ZIP was not created.' }; Write-Host ('Done: '+$zip); } else { throw 'Choose C or E.' }; } catch { Write-Host ('FAILED: '+$_.Exception.Message); exit 1 } finally { if($stage -and (Test-Path -LiteralPath $stage)) { $resolved=[IO.Path]::GetFullPath($stage); if($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved) -match '^SmoothBoot-collect-[0-9a-f]{32}$') { [IO.Directory]::Delete($resolved,$true) } } }"
 set "collector_result=%errorlevel%"
 pause
 exit /b %collector_result%
@@ -3189,13 +3241,41 @@ local function complete_chain(t0,want_throttle,manual_protection,ok,...)
         local top={}
         for k,v in pairs(err_top) do top[#top+1]=k..'='..v end
         table.sort(top,function(a,b) return tonumber(a:match('=(%d+)$'))>tonumber(b:match('=(%d+)$')) end)
-        local rehooks={}
-        for k,n in pairs(head_seen) do if n>=2 then rehooks[#rehooks+1]=k..' x'..n end end
-        if #rehooks>0 then log('rehooks: '..table.concat(rehooks,', ')) end
+        -- 3.0.43: a source that re-installs its hook every frame is re-adopted
+        -- every time it does. Say it once per source (not every window), and say
+        -- plainly when exclude= cannot stop it because it sits above us.
+        local new_hooks={}
+        M._rehook_logged=M._rehook_logged or {}
+        for k,n in pairs(head_seen) do
+            if n>=2 and not M._rehook_logged[k] then
+                M._rehook_logged[k]=true
+                local managed=(WH.inventory or ''):find(k,1,true)~=nil
+                new_hooks[#new_hooks+1]=k..' x'..n..(managed and '' or
+                    ' (not managed: it sits above SmoothBoot or outside the chain, so exclude= cannot stop it)')
+            end
+        end
+        if #new_hooks>0 then log('rehooks: '..table.concat(new_hooks,', ')) end
         local avg_ms=stats.n>0 and stats.total/stats.n or 0
         log(string.format('stats frames=%d calls=%d skipped=%d avg=%.2fms max=%.2fms skip=%d errors=%d top:%s',
             frames,calls,skipped,avg_ms,stats.max,skip,
             err_total,table.concat(top,',',1,math.min(3,#top))))
+        do
+            local win_s=os.clock()-diag2.start
+            local chain_ms=(stats.total-diag2.chain0)   -- stats.total is already ms
+            -- 3.0.43: this self-timing is diagnostic only, so it follows diag=yes
+            -- instead of adding a line to every user's log every window.
+            if cfg.diag then
+                log(string.format(
+                    'diag2 window_s=%.1f entries=%d pre_ms_s=%.1f pre_total_ms=%.1f pre_avg_ms=%.3f pre_max_ms=%.1f chain_ms_s=%.1f chain_total_ms=%.1f walk_total_ms=%.1f disc_total_ms=%.1f poll_total_ms=%.1f',
+                    win_s,diag2.n,win_s>0 and diag2.pre*1000/win_s or 0,diag2.pre*1000,
+                    diag2.n>0 and diag2.pre*1000/diag2.n or 0,diag2.pre_max*1000,
+                    win_s>0 and chain_ms/win_s or 0,chain_ms,
+                    diag2.walk*1000,diag2.disc*1000,diag2.poll*1000))
+            end
+            diag2.pre,diag2.pre_max,diag2.n,diag2.walk,diag2.disc,diag2.poll=0,0,0,0,0,0
+            diag2.chain0=stats.total
+            diag2.start=os.clock()
+        end
         local perf=rawget(_G,'HD2Perf')
         if type(perf)=='table' then
             local rows={}
@@ -3222,6 +3302,7 @@ local protection_render=nil
 
 wrapper=function(...)
     local nowf=os.clock()
+    local diag2_t0=nowf
     if cfg.c4_cpu_profile or C4CPU.running or C4CPU.completed then C4CPU.poll(nowf)end
     if nowf>last_call then
         fi_t=fi_t+(nowf-last_call); fi_n=fi_n+1
@@ -3253,10 +3334,13 @@ wrapper=function(...)
             local ok,r=pcall(function() return debug.getinfo(hh,'S').source or '?' end)
             if ok then who=(r:match('mods/[%w_./%-]+') or r:sub(1,40)) end
         else who='self' end
-        log('first frame reached, head='..who)
+        log('first frame reached, head='..who..
+            (who=='self' and '' or ' (SmoothBoot is not the outermost wrapper - move it to the bottom of the mod list so it can manage the whole chain)'))
     end
     if frames%120==0 or frames==1 then
+        local d0=os.clock()
         local ok,err=pcall(wh_full_walk)
+        diag2.walk=diag2.walk+(os.clock()-d0)
         if not ok then log('writer hold: walk ERROR: '..tostring(err)) end
     end
     local current_head=rawget(_G,'update')
@@ -3264,7 +3348,9 @@ wrapper=function(...)
     if frames==1 or frames%120==0 or current_head~=protection_head or current_render~=protection_render then
         protection_head=current_head
         protection_render=current_render
+        local d1=os.clock()
         local ok,err=pcall(refresh_frame_protection)
+        diag2.disc=diag2.disc+(os.clock()-d1)
         if not ok then log('frame-critical discovery failed: '..tostring(err)) end
     end
     if frames==1 or frames%300==0 then
@@ -3369,6 +3455,7 @@ wrapper=function(...)
         end)
     end
     if os.clock()-last_cfg>10 then
+        local pd0=os.clock()
         last_cfg=os.clock()
         if not M.tools_ready and tool_attempts<6 then provision_tools() end
         cfg=conf()
@@ -3384,6 +3471,7 @@ wrapper=function(...)
             end
         end
         pcall(refresh_frame_protection)
+        diag2.poll=diag2.poll+(os.clock()-pd0)
     end
     -- boot freeze: hold the entire chain until the engine is stable
     if cfg.boot_freeze_s and cfg.boot_freeze_s>0 then
@@ -3441,6 +3529,10 @@ wrapper=function(...)
         announced['<peer-suspend>']=true
         log('peer active: automatic throttling suspended - the peer manual settings have priority (pcall/breaker stay on; set peer_suspend=no to take over again)')
     end
+    local diag2_spent=os.clock()-diag2_t0
+    diag2.pre=diag2.pre+diag2_spent
+    diag2.n=diag2.n+1
+    if diag2_spent>diag2.pre_max then diag2.pre_max=diag2_spent end
     calls=calls+1
     local t0=os.clock()
     inside=true
