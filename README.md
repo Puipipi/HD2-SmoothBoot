@@ -18,6 +18,11 @@ mods/... → your HUD mod → another mod → SmoothBoot (governor) → the rest
 **Current release: 3.0.45** — maintenance release, 2026-10-04. See
 [release notes](RELEASE-NOTES-3.0.45.md) and the [change log](CHANGELOG.md).
 
+Development candidate **3.0.46** guards the original-chain re-entry path. Its
+bounded-cycle regression and unchanged HD2Runtime 0.28.1 scheduler replay pass
+under both LuaJIT runtimes. Live crash attribution and Runtime performance
+acceptance remain open; see [candidate notes](RELEASE-NOTES-3.0.46.md).
+
 ## Status: what is verified, and what is not
 
 Confidence is not uniform, so it is stated here rather than implied.

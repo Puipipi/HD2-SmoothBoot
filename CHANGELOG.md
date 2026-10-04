@@ -1,5 +1,15 @@
 # SmoothBoot change log / 变更记录
 
+## 3.0.46 candidate — 2026-10-05
+
+Bound original-chain re-entry and reset the pass-through guard after errors.
+Preserve exact callback result arity. Added two-runtime regression tests and
+unchanged HD2Runtime 0.28.1 scheduler replay in both load orders. Native Runtime
+behavior and the reported live performance conflict remain unverified.
+
+修复原链直通的递归漏洞，异常后复位保护并保留返回值数量。增加两套 LuaJIT
+回归及 Runtime 原始调度器两种加载顺序的回放；原生行为与实机性能反馈仍未验收。
+
 Newest first, kept verbatim. This file holds the per-candidate notes that used to
 sit at the top of `README.md` (3.0.21 → 3.0.45); each block is a candidate note,
 followed by the older entries it superseded. Notes for shipped versions live in

@@ -1,5 +1,9 @@
 # HD2 SmoothBoot
 
+开发候选 **3.0.46** 已补上原链直通路径的重入保护，并通过两套 LuaJIT 的递归
+回归及 HD2Runtime 0.28.1 原始调度器回放。实机崩溃归因和 Runtime 性能验收仍待
+完成；详见 [候选说明](RELEASE-NOTES-3.0.46.md)。下方 3.0.45 验收记录属于历史版本。
+
 [English](README.md) / 简体中文
 
 SmoothBoot 是 Helldivers 2 Lua 模组的**链条调度器（chain governor）**，运行在 Bingus 共享加载器（API 1）之上。

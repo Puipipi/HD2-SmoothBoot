@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.45' then return old end
+if old and old.version=='3.0.46' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.45',status='starting',init_started=os.clock()}
+local M={version='3.0.46',status='starting',init_started=os.clock()}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -2928,6 +2928,9 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
+Candidate 3.0.46: original-chain pass-through now breaks a second re-entry before timing or discovery. Legitimate adopted chains still reach their original downstream once. Success, errors and trailing nil results reset the guard correctly. HD2Runtime 0.28.1's unchanged scheduler has been replayed offline in both load orders; this is not live crash or performance acceptance.
+候选3.0.46：原链直通路径在第二次重入时终止循环，保护发生在计时和识别之前。正常接回的调用链仍可转发至原链；成功、异常及末尾nil返回值均会正确复位保护。已离线回放HD2Runtime 0.28.1原始调度器的两种加载顺序；尚未完成实机崩溃与性能验收。
+
 Release 3.0.45: writer hold gates now carry the delegated writer's name plus [SB gate] in source-based profilers. This identifies our routing shell, not a changed third-party file. Released writer work and the shell's forwarding overhead are charged to that row; SmoothBoot's governor keeps its own row. Profiler probes, callback results and release timing are preserved. No work is hidden or disabled to lower the displayed cost.
 正式版3.0.45：写入保护门在按源码归属的性能面板中显示被托管模组名称及[SB gate]标记，明确表示这是我们的转发门，并非修改了第三方文件。释放后原模组的执行耗时与门本身的转发开销计入该行；SmoothBoot调度器仍保留独立一行。计时探针、回调返回值和释放时机保留；没有通过隐藏或禁用工作降低显示数值。
 Accepted on 2026-10-04: live startup attribution and companion-tool generation, followed by user-operated mission, death/respawn and return-to-ship checks. This is an attribution maintenance release, not a claim of universal compatibility or a C4/FPS fix.
@@ -3344,8 +3347,32 @@ local function heartbeat(txt)
 end
 local protection_head=nil
 local protection_render=nil
+local passthrough_busy=false
+local function complete_passthrough(ok,...)
+    passthrough_busy=false
+    if not ok then error((...),0) end
+    return ...
+end
 
 wrapper=function(...)
+    -- An adopted head legitimately returns through us once to reach the
+    -- original chain. If that chain dispatches through update again, another
+    -- pass-through would re-run the same chain recursively. Guard before
+    -- timing/discovery; reset on both success and error, preserving arity.
+    if inside then
+        if passthrough_busy then
+            M.reentry_cycles=(M.reentry_cycles or 0)+1
+            if M.reentry_cycles==1 then
+                log('update re-entry cycle detected and broken (original chain redispatched through SmoothBoot)')
+            end
+            return
+        end
+        in_frames=in_frames+1
+        local below=WH.entry or base_prev
+        if type(below)~='function' then return end
+        passthrough_busy=true
+        return complete_passthrough(pcall(below,...))
+    end
     local nowf=os.clock()
     local diag2_t0=nowf
     if cfg.c4_cpu_profile or C4CPU.running or C4CPU.completed then C4CPU.poll(nowf)end
@@ -3354,12 +3381,6 @@ wrapper=function(...)
         if fi_n>=600 then fi_t=fi_t/2; fi_n=fi_n/2 end
     end
     last_call=nowf
-    -- role 2: an adopted chain calls back into us from inside; pass through to
-    -- the original chain. This is what breaks wrapper -> X -> wrapper cycles.
-    if inside then
-        in_frames=in_frames+1
-        return (WH.entry or base_prev)(...)
-    end
     frames=frames+1
     local dtv=select(1,...)
     if type(dtv)=='number' and dtv>dt_window then dt_window=dtv end
