@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.37' then return old end
+if old and old.version=='3.0.38' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.37',status='starting'}
+local M={version='3.0.38',status='starting'}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -637,8 +637,8 @@ end
 
 -- BEGIN C4 CONTEXT BATCH
 -- ContextReader contract adapted from HD2 C4 Quick Actions under the MIT
--- notice above. Candidate changes validation reads only: every original guard
--- is compared to fresh bytes, with original-field fallback on larger failures.
+-- notice above. Every original guard is compared to fresh bytes. Validation
+-- and scan-local template reads batch fields with individual-read fallback.
 local GuardBatch=(function()
 -- Private validation-read prototype. No cached native bytes or native writes.
 local M={}
@@ -772,13 +772,19 @@ M.product_low=product_low
 
 function M.snapshot(api,game,extend)
     local guards,reads,bytes={},0,0
+    local actual_reads,actual_bytes=0,0
     local validation_reads,validation_bytes=0,0
     local extension_result
-    local function read(at,n,guard)
+    local function read(at,n,guard,prefetched)
         assert(type(at)=='number' and at>=65536 and at+n<0x800000000000,'invalid_address')
         reads=reads+1;bytes=bytes+n
         assert(n>0 and n<=4096 and reads<=768 and bytes<=32768,'snapshot_budget')
-        local b=assert(api.read(at,n),'read_unavailable')
+        local b=prefetched
+        if b==nil then
+            actual_reads=actual_reads+1;actual_bytes=actual_bytes+n
+            b=api.read(at,n)
+        end
+        b=assert(b,'read_unavailable')
         assert(#b==n,'short_read')
         if guard then guards[#guards+1]={at=at,bytes=b} end
         return b
@@ -823,7 +829,7 @@ function M.snapshot(api,game,extend)
     local function finish(reason)
         if not checked() then return nil,'context_changed_during_read' end
         if reason~='c4_context_observed' then row.c4_guard_candidate=false end
-        row.context_status=reason;row.memory_reads=reads+validation_reads;row.memory_bytes=bytes+validation_bytes
+        row.context_status=reason;row.memory_reads=actual_reads+validation_reads;row.memory_bytes=actual_bytes+validation_bytes
         return row,nil,extension_result
     end
     local mode=read(global(R.global_mode),0x44,true)
@@ -921,8 +927,27 @@ function M.snapshot(api,game,extend)
     local start=0
     for b=8,1,-1 do start=(start*256+weapon:byte(b))%D.ability_capacity end
     row.ability_template_status='absent'
+    -- Fresh, scan-local blocks only. Unvisited slots never become guards.
+    -- Extra unreadable bytes/short results/reader exceptions fall back to
+    -- the original individual reads for the rest of this scan. Logical
+    -- snapshot bounds still count every original visited 16-byte field.
+    local block,block_slot,block_count
+    local individual=false
     for probe=0,D.ability_capacity-1 do
-        local t=read(templates+((start+probe)%D.ability_capacity)*16,16,true)
+        local slot=(start+probe)%D.ability_capacity
+        if not individual and (not block or slot<block_slot or slot>=block_slot+block_count) then
+            block_slot=slot
+            block_count=math.min(16,D.ability_capacity-slot,D.ability_capacity-probe,768-reads)
+            local at=templates+slot*16;local n=block_count*16
+            if block_count>1 and bytes+16<=32768 and type(at)=='number' and at>=65536 and at+n<0x800000000000 then
+                actual_reads=actual_reads+1;actual_bytes=actual_bytes+n
+                local ok,value=pcall(api.read,at,n)
+                if ok and type(value)=='string' and #value==n then block=value
+                else individual=true;block=nil end
+            else individual=true;block=nil end
+        end
+        local t=read(templates+slot*16,16,true,
+            block and block:sub((slot-block_slot)*16+1,(slot-block_slot+1)*16) or nil)
         local key=resource(t)
         if key=='0000000000000000' then break end
         if key==hash then
@@ -998,7 +1023,7 @@ function C4Context.attach(target)
     if not ok then log('C4 context batch: unsupported capture; unchanged');return false end
     C4Context.records[target]={original=original,replacement=replacement}
     rawset(target,'snapshot',replacement);C4Context.active=1
-    log('C4 context batch: active (verified original snapshot; fresh checks and native actions preserved)')
+    log('C4 context batch: active (verified original snapshot; fresh checks, scan-local template blocks, native actions preserved)')
     return true
 end
 function C4Context.restore()
@@ -2602,8 +2627,8 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.37: C4 owned-fire maintenance omits diagnostic templates; live acceptance pending.
-测试候选3.0.37：C4已有射击接管省去诊断模板扫描，尚待实际游戏验收。
+Candidate 3.0.38: C4 template scans read fresh contiguous blocks; live acceptance pending.
+测试候选3.0.38：C4模板扫描合并读取连续项、每次读取最新数据，尚待实际游戏验收。
 
 [Report an issue / 反馈问题]
   The game creates Collect-Logs.bat next to this README on first run

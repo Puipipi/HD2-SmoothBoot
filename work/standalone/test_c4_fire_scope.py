@@ -45,7 +45,9 @@ def setup(vm,quiet=False):
       calls=0;assert(gate.sync(true,true));baseline_reads=calls
       if M.c4_fire_scope then assert(M.c4_fire_scope.attach(gate))end
       calls=0;assert(gate.sync(true,true));candidate_reads=calls
-      assert(candidate_reads<baseline_reads*0.65,'RED: owned fire maintenance still scans diagnostic templates')
+      -- Full snapshots also batch templates now; the private consumer must
+      -- still save reads rather than depend on the old percentage threshold.
+      assert(candidate_reads<baseline_reads,'RED: owned fire maintenance still scans diagnostic templates')
       assert(writes==1 and verifications==1 and gate.active)
       print('owned fire reads',baseline_reads,'->',candidate_reads)
     ''')
@@ -98,7 +100,7 @@ def contracts(game):
         assert outcomes[0]==outcomes[1],(name,outcomes)
         results.append(name)
     checks={
-        'new_acquire_full_templates': 'gate.stop();template_reads=0;api.read=function(at,n)if at>=address+0xc700 and at<address+0xd000 then template_reads=template_reads+1 end;return original_read(at,n)end;assert(gate.sync(true,true));assert(template_reads>=128)',
+        'new_acquire_full_templates': 'gate.stop();template_bytes=0;api.read=function(at,n)if at>=address+0xc700 and at<address+0xcf00 then template_bytes=template_bytes+n end;return original_read(at,n)end;assert(gate.sync(true,true));assert(template_bytes>=2048)',
         'steady_omits_templates': 'template_reads=0;api.read=function(at,n)if at>=address+0xc700 and at<address+0xd000 then template_reads=template_reads+1 end;return original_read(at,n)end;assert(gate.sync(true,true));assert(template_reads==0)',
         'unchanged_shared_snapshot': 'assert(fire_base.snapshot==M.c4_context_batch.records[fire_base].replacement);assert(upvalue(original_current,"base")==fire_base)',
         'idempotent': 'local current=upvalue(gate.sync,"current");assert(M.c4_fire_scope.attach(gate));assert(upvalue(gate.sync,"current")==current and M.c4_fire_scope.active==1)',

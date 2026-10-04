@@ -338,7 +338,7 @@ class UiScopeTests(unittest.TestCase):
         vm=VM(False)
         try:
             source=SB.read_text(encoding='utf-8');setup(vm,source,reference=True)
-            vm.run("assert(candidate_reads<=baseline_reads/2)")
+            vm.run("assert(candidate_reads<baseline_reads)")
             vm.run(CONTRACTS);vm.run(INTEGRATION);full_module(vm,source)
         finally:vm.close()
 
@@ -357,7 +357,7 @@ def main():
         fingerprint,baseline,candidate,runtime=stats.split(';')
         print('fingerprint avatar_ui/native_ui:',fingerprint,flush=True)
         print('UI original native reads',baseline,'->',candidate,flush=True)
-        vm.run("assert(candidate_reads<=baseline_reads/2,'RED: flags-only UI still scans unrelated weapon/template data')")
+        vm.run("assert(candidate_reads<baseline_reads,'RED: flags-only UI still scans unrelated weapon/template data')")
         vm.run(CONTRACTS)
         vm.run(INTEGRATION)
         measurements=None
