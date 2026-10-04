@@ -14,9 +14,10 @@ class PolicyTests(unittest.TestCase):
   return rt,home
  def test_legacy_hud_setting_does_not_create_popup(self):
   rt,home=self.setup_runtime('hud=on\nthrottle=auto\nboot_pause_s=0\nwriters=\n')
-  rt.execute("HD2Transmog={};LTE_helmet_cape_passives={};stingray={Gui={rect=function() error('unexpected popup') end},World={create_screen_gui=function() error('unexpected popup') end}}")
+  rt.execute("HD2Transmog={};LTE_helmet_cape_passives={};popup_calls=0;local function forbidden()popup_calls=popup_calls+1;error('unexpected popup')end;stingray={Gui={rect=forbidden},World={create_screen_gui=forbidden}}")
   rt.execute(SOURCE);rt.execute('for i=1,300 do assert(update(0.016)==123) end')
-  self.assertFalse('create_screen_gui' in SOURCE,'popup renderer remains');self.assertFalse('GetAsyncKeyState' in SOURCE,'mouse sampler remains')
+  self.assertEqual(rt.globals().popup_calls,0,'Smooth invoked a graphics API')
+  self.assertFalse('GetAsyncKeyState' in SOURCE,'mouse sampler remains')
   self.assertIsNone(rt.globals().HD2SmoothBoot['_hud_draw'])
  def test_existing_list_is_merged_once_and_user_can_undo(self):
   rt,home=self.setup_runtime('exclude=my_custom_mod\n')

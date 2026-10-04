@@ -24,7 +24,7 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.40' then return old end
+if old and old.version=='3.0.41' then return old end
 if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
     pcall(old.c4_read_pool.restore)
 end
@@ -52,7 +52,7 @@ end
 if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
     pcall(old.c4_cpu_profile.stop,'module_reload')
 end
-local M={version='3.0.40',status='starting'}
+local M={version='3.0.41',status='starting',init_started=os.clock()}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -116,6 +116,7 @@ if not loader then
     log(M.status)
     return M
 end
+log('module entry v'..M.version..' - measuring own initialization only')
 
 local function conf()
     local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
@@ -296,6 +297,7 @@ local function detect_ui_mods(extra)
     end
     return found
 end
+
 
 local function excluded_list(spec)
     local t={}
@@ -2301,9 +2303,110 @@ local function wh_make_gate(writer,nextfn)
     end
     return gate,ctl
 end
+-- Read-only LuaJIT metadata, never a graphics hook or a call to foreign code.
+-- Cache immutable field accesses; inspect mutable closure references afresh.
+local HUDProbe={fields=setmetatable({},{__mode='k'})}
+do
+    local ok,u=pcall(require,'jit.util')
+    if ok and type(u)=='table' and type(u.funcbc)=='function' and type(u.funck)=='function'
+       and type(u.funcinfo)=='function' then
+        local sample=function(t)return t.__smooth_hud_field end
+        for pc=1,8 do
+            local bc=u.funcbc(sample,pc)
+            if not bc then break end
+            local c=math.floor(bc/65536)%256
+            if u.funck(sample,-c-1)=='__smooth_hud_field' then
+                HUDProbe.util,HUDProbe.field_op=u,bc%256;break
+            end
+        end
+    end
+end
+function HUDProbe.field_reads(fn)
+    local cached=HUDProbe.fields[fn]
+    if cached then return cached end
+    local fields={}
+    local u=HUDProbe.util
+    if u then
+        local ok,info=pcall(u.funcinfo,fn)
+        local n=ok and info and info.bytecodes
+        if type(n)=='number' and n<=16384 then
+            for pc=1,n do
+                local bc=u.funcbc(fn,pc)
+                if not bc then break end
+                if bc%256==HUDProbe.field_op then
+                    local key=u.funck(fn,-(math.floor(bc/65536)%256)-1)
+                    if type(key)=='string' then fields[key]=true end
+                end
+            end
+        end
+    end
+    HUDProbe.fields[fn]=fields
+    return fields
+end
+function HUDProbe.apis()
+    local sr=rawget(_G,'stingray')
+    if type(sr)~='table' then return {} end
+    local refs={sr=sr,functions={}}
+    local methods={Gui={'text','rect','bitmap','line','triangle','text_3d','triangle_3d','material'},
+        LineObject={'add_line','add_sphere','add_box','dispatch'},
+        World={'create_screen_gui','create_world_gui','create_line_object'}}
+    for name,keys in pairs(methods) do
+        local api=rawget(sr,name)
+        if type(api)=='table' then
+            refs[name]=api
+            for _,key in ipairs(keys) do
+                local fn=rawget(api,key)
+                if type(fn)=='function' then refs.functions[fn]=true end
+            end
+        end
+    end
+    return refs
+end
+function HUDProbe.draws(root,refs)
+    if not refs.sr then return false end
+    local queue,seen={root},{}
+    local at=1
+    while at<=#queue and at<=32 do
+        local fn=queue[at];at=at+1
+        if not seen[fn] then
+            seen[fn]=true
+            if refs.functions and refs.functions[fn] then return true end
+            local fields=HUDProbe.field_reads(fn)
+            local gui_method=fields.text or fields.rect or fields.bitmap or fields.line
+                or fields.triangle or fields.text_3d or fields.triangle_3d or fields.material
+            local line_method=fields.add_line or fields.add_sphere or fields.add_box or fields.dispatch
+            local world_method=fields.create_screen_gui or fields.create_world_gui or fields.create_line_object
+            if (refs.Gui and fields.Gui and gui_method) or (refs.LineObject and fields.LineObject and line_method)
+               or (refs.World and fields.World and world_method) then return true end
+            local downstream=wh_next(fn)
+            for i=1,64 do
+                local key,value=debug.getupvalue(fn,i)
+                if not key then break end
+                if type(value)=='table' then
+                    if (rawequal(value,refs.Gui) and gui_method) or (rawequal(value,refs.LineObject) and line_method)
+                       or (rawequal(value,refs.World) and world_method) then return true end
+                elseif type(value)=='function' then
+                    if refs.functions and refs.functions[value] then return true end
+                    if value~=downstream and #queue<32 then queue[#queue+1]=value end
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function refresh_frame_protection()
     local found=detect_ui_mods(cfg.ui_mods)
     local chunks,seen={},{}
+    local sources,source_seen,manual={},{},{}
+    local automatic={}
+    local refs=HUDProbe.apis()
+    local render_head=rawget(_G,'render')
+    local render_name=function_chunk(render_head)
+    if render_name~='' and not render_name:find('mods/codex/smoothboot',1,true) then
+        chunks[render_name]=true;found[#found+1]=render_name
+        automatic[#automatic+1]=render_name
+    end
     local queue={}
     local function add(fn)
         if type(fn)=='function' and not seen[fn] and #queue<128 then
@@ -2319,6 +2422,17 @@ local function refresh_frame_protection()
         else
             local name=function_chunk(fn)
             local low=name:lower()
+            if name~='' and not source_seen[name] then
+                source_seen[name]=true;sources[#sources+1]=name
+                if is_excluded(name,excludes) then manual[#manual+1]=name end
+            end
+            if name~='' and not low:find('mods/codex/smoothboot',1,true) and not chunks[name] then
+                local drawing=HUDProbe.draws(fn,refs)
+                if is_excluded(name,excludes) or drawing then
+                    chunks[name]=true;found[#found+1]=name
+                    if drawing then automatic[#automatic+1]=name end
+                end
+            end
             for _,chunk in ipairs(FRAME_CRITICAL_CHUNKS) do
                 if (low==chunk or low==chunk..'.lua') and not chunks[name] then
                     chunks[name]=true; found[#found+1]=name
@@ -2354,10 +2468,17 @@ local function refresh_frame_protection()
             end
         end
     end
+    M.discovered_sources=sources
+    M.excluded_below=manual
+    M.auto_hud_sources=automatic
+    if M.frag_check then pcall(M.frag_check) end
+    table.sort(found)
     M.protected_sources=found
     local protected=#found>0
-    if protected~=ui_present then
+    local signature=table.concat(found,',')
+    if protected~=ui_present or signature~=M._protection_signature then
         ui_present=protected
+        M._protection_signature=signature
         if protected then
             log('frame-critical callbacks present ('..table.concat(found,',')..') - chain skipping and pausing suspended')
         else
@@ -2366,6 +2487,13 @@ local function refresh_frame_protection()
     end
 end
 M.find_excluded_below=function()
+    if M.discovered_sources then
+        local names={}
+        for _,name in ipairs(M.discovered_sources) do
+            if is_excluded(name,excludes) then names[#names+1]=name end
+        end
+        return names
+    end
     local cur=head_above or WH.entry or base_prev
     local seen,names,added={},{},{}
     for depth=1,128 do
@@ -2579,14 +2707,18 @@ end
 -- fragments get a single summary line because the shipped default lists many
 -- optional mods that are legitimately not installed.
 function M.frag_check()
-    if not WH.inventory then return end
+    -- The writer walk is linear; wait for the bounded bus discovery before
+    -- warning about a missing fragment. Otherwise a real HUD looks absent.
+    if not M.discovered_sources then return end
+    local inventory=(WH.inventory or '')..','..table.concat(M.discovered_sources or {},',')
+    if inventory==',' then return end
     M._fragn = M._fragn or {}
     local function check(list, individual, skip)
         local missing = {}
         for frag in (list or ''):gmatch('[%w_./%-]+') do
             if skip and skip:find(frag, 1, true) then
                 -- shipped default: our own fragment, never warn about it
-            elseif frag ~= '' and not WH.inventory:find(frag, 1, true) and not M._fragn[frag] then
+            elseif frag ~= '' and not inventory:find(frag, 1, true) and not M._fragn[frag] then
                 M._fragn[frag] = true
                 missing[#missing+1] = frag
                 if individual then
@@ -2727,8 +2859,18 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.40: callback forwarding avoids per-frame result tables and preserves trailing nil.
-测试候选3.0.40：减少回调转发的逐帧临时分配，完整保留包含末尾nil的返回值。
+Candidate 3.0.41: detects common drawing field accesses, captured graphics APIs and mod render hooks.
+候选3.0.41：自动识别常见绘图接口、闭包引用与模组render回调，无需逐个添加名称。
+Metadata is read only and cached; no foreign callback or graphics API is invoked by discovery.
+只读取并缓存函数元数据；识别过程不执行第三方回调，不调用绘图接口。
+Detected HUDs retain every update of their enclosing chain. This is not independent per-mod scheduling.
+被识别HUD所在链条保留逐帧更新；这不是逐模组独立调度。
+Unusual/dynamic/custom renderers may need the existing exclude list. Live acceptance remains required.
+特殊、动态或自定义绘制仍可能需要排除名单，模拟测试不能代替实机验收。
+Startup logs measure Smooth's own module-body initialization; pre-animation black-screen cause is unconfirmed.
+启动日志记录Smooth自身初始化时间；片头前黑屏原因尚未确认，未宣称已经缩短黑屏。
+Callback forwarding still avoids per-frame result tables and preserves trailing nil.
+公共回调转发仍不逐帧创建返回值表，并保留末尾nil。
 HUD Ballistic Trajectory, Enemy HP, DiversBestFriend and Aggro Counter callbacks
 protect their enclosing chain from skipped/paused updates, including update buses.
 弹道HUD、Enemy HP、DiversBestFriend和Aggro Counter所在调用链保留逐帧更新，兼容调度总线。
@@ -2960,8 +3102,9 @@ local function c4_snapshot()
     end
 end
 
-log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d',
-    M.version,tostring(previous~=nil),skip,#excludes))
+M.init_elapsed_ms=(os.clock()-M.init_started)*1000
+log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d init_elapsed_ms=%.2f',
+    M.version,tostring(previous~=nil),skip,#excludes,M.init_elapsed_ms))
 
 
 -- Preserve every result (including trailing nil) without allocating a table
@@ -3075,6 +3218,7 @@ local function heartbeat(txt)
     end)
 end
 local protection_head=nil
+local protection_render=nil
 
 wrapper=function(...)
     local nowf=os.clock()
@@ -3100,6 +3244,7 @@ wrapper=function(...)
     if frames==1 then heartbeat('first frame; head_is_self='..tostring(rawget(_G,'update')==wrapper)) end
     if frames%600==0 then heartbeat('alive frames='..frames) end
     if frames==1 then
+        log(string.format('first update since module entry %.2fms',(os.clock()-M.init_started)*1000))
         M.excluded_below=M.find_excluded_below()
         if cfg.snapshot then pcall(runtime_snapshot) end
         local hh=rawget(_G,'update')
@@ -3115,8 +3260,10 @@ wrapper=function(...)
         if not ok then log('writer hold: walk ERROR: '..tostring(err)) end
     end
     local current_head=rawget(_G,'update')
-    if frames==1 or frames%120==0 or current_head~=protection_head then
+    local current_render=rawget(_G,'render')
+    if frames==1 or frames%120==0 or current_head~=protection_head or current_render~=protection_render then
         protection_head=current_head
+        protection_render=current_render
         local ok,err=pcall(refresh_frame_protection)
         if not ok then log('frame-critical discovery failed: '..tostring(err)) end
     end

@@ -1,6 +1,15 @@
 # HD2 SmoothBoot
 
-当前开发候选 **3.0.40**：将安全的通用优化放入 Smooth 的公共回调路径。
+当前开发候选 **3.0.41** 扩展 HUD 自动识别：只读 LuaJIT 函数元数据中的实际绘图字段访问、闭包持有的绘图接口以及模组 render 回调，不依赖新模组的名称。首次更新、更新或绘制链头变化及周期巡检触发发现；不可变元数据只解析一次。没有全局绘图钩子，也不会为识别而执行第三方代码或绘图接口。
+
+常见 GUI/LineObject 绘制被识别后，所在链条保留逐帧更新。**仍是整链保护；特殊或动态绘制无法保证全部识别，排除名单仍可使用。** 同时修正更新总线里排除项被误报为未安装的问题，保留旧的输入/UI 保护。
+
+新增一次性的自身初始化和首次更新计时，用于区分 Smooth 模块执行与片头前启动等待。**没有宣称黑屏已优化，也没有改变第三方启动顺序或扫描预算。** 本版本尚未部署或完成真实游戏验收。
+
+Development candidate **3.0.41** discovers common graphics field accesses, captured graphics APIs and mod render hooks from read-only function metadata. Discovery never calls foreign callbacks or graphics APIs and caches immutable metadata. Detected callbacks preserve the enclosing chain's full update cadence; this is not selective scheduling and unusual/dynamic renderers may still need exclusion. One-time startup timestamps measure this module's own initialization only; no black-screen improvement is claimed. Live acceptance is pending.
+
+
+上一候选 **3.0.40**：将安全的通用优化放入 Smooth 的公共回调路径。
 不再逐帧创建返回值表或心跳闭包，并完整保留末尾 nil 和多返回值。
 写入门的异常、循环保护及 Watchdog 下游探针保持原有策略。
 弹道 HUD、Enemy HP、DiversBestFriend、Aggro Counter 的回调会在首帧、
@@ -10,7 +19,7 @@
 
 92 项回归测试、独立游戏 Lua 库的输入/射击/UI 校验以及两种运行库的
 32 种 HUD 调用链布局检查通过。模拟中的 180 帧均保留 180 次更新/绘制通知。
-**模拟通过不等于实机验收；3.0.40 尚未确认 HUD 绘制和三项高开销反馈已解决。**
+**3.0.40 本机实测 HP、Aggro、战备轮盘可用，弹道 HUD 跟手但轻微重影；高占用反馈未在相同条件复现，不能宣称已解决全部兼容性问题。**
 
 Watchdog 会把 Smooth 写入门后执行的部分工作归入 Smooth。ms/s 是每秒累计，
 worst 是最慢单帧；“游戏”这一行测的是更新回调，不是完整游戏 CPU/GPU 负载。
