@@ -24,35 +24,8 @@
 -- !! variable reference.
 local KEY='HD2SmoothBoot'
 local old=rawget(_G,KEY)
-if old and old.version=='3.0.46' then return old end
-if old and type(old.c4_read_pool)=='table' and type(old.c4_read_pool.restore)=='function' then
-    pcall(old.c4_read_pool.restore)
-end
-if old and type(old.c4_input_scope)=='table' and type(old.c4_input_scope.restore)=='function' then
-    pcall(old.c4_input_scope.restore)
-end
-if old and type(old.c4_fire_scope)=='table' and type(old.c4_fire_scope.restore)=='function' then
-    pcall(old.c4_fire_scope.restore)
-end
-if old and type(old.c4_input_batch)=='table' and type(old.c4_input_batch.restore)=='function' then
-    pcall(old.c4_input_batch.restore)
-end
-if old and type(old.c4_context_batch)=='table' and type(old.c4_context_batch.restore)=='function' then
-    pcall(old.c4_context_batch.restore)
-end
-if old and type(old.c4_ui_scope)=='table' and type(old.c4_ui_scope.restore)=='function' then
-    pcall(old.c4_ui_scope.restore)
-end
-if old and type(old.c4_idle_batch)=='table' and type(old.c4_idle_batch.restore)=='function' then
-    pcall(old.c4_idle_batch.restore)
-end
-if old and type(old.c4_native_batch)=='table' and type(old.c4_native_batch.restore)=='function' then
-    pcall(old.c4_native_batch.restore)
-end
-if old and type(old.c4_cpu_profile)=='table' and type(old.c4_cpu_profile.stop)=='function' then
-    pcall(old.c4_cpu_profile.stop,'module_reload')
-end
-local M={version='3.0.46',status='starting',init_started=os.clock()}
+if old and old.version=='3.0.50' then return old end
+local M={version='3.0.50',status='starting',init_started=os.clock()}
 rawset(_G,KEY,M)
 
 local HOME=(os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')..'/CowboyBingus/Helldivers2/'
@@ -60,19 +33,21 @@ local LOG=HOME..'Logs/SmoothBoot.log'
 local CFG=HOME..'SmoothBoot/config.txt'
 -- Create only our own directories, without launching a shell. Resolve a typed
 -- function pointer rather than adding filesystem prototypes to global ffi.C.
+-- Private aliases also isolate us from incompatible plain-name declarations
+-- made earlier in the shared VM (the loader uses the same isolation pattern).
 local function ensure_dirs()
     local ok,err=pcall(function()
         local ffi=require('ffi')
         ffi.cdef [[
-            void *GetModuleHandleA(const char *name);
-            void *GetProcAddress(void *module, const char *name);
+            void *smoothboot_GetModuleHandleA(const char *name) __asm__("GetModuleHandleA");
+            void *smoothboot_GetProcAddress(void *module, const char *name) __asm__("GetProcAddress");
         ]]
         local k32=ffi.load('kernel32')
-        local module=k32.GetModuleHandleA('kernel32.dll')
+        local module=k32.smoothboot_GetModuleHandleA('kernel32.dll')
         local create=ffi.cast('int (__stdcall *)(const char *, void *)',
-                             k32.GetProcAddress(module,'CreateDirectoryA'))
+                             k32.smoothboot_GetProcAddress(module,'CreateDirectoryA'))
         local attr=ffi.cast('unsigned long (__stdcall *)(const char *)',
-                           k32.GetProcAddress(module,'GetFileAttributesA'))
+                           k32.smoothboot_GetProcAddress(module,'GetFileAttributesA'))
         for _,path in ipairs({HOME:match('^(.*)Helldivers2/$'),HOME,HOME..'Logs/',HOME..'SmoothBoot/'}) do
             local normalized=path:gsub('/','\\')
             if attr(normalized)==4294967295 and create(normalized,nil)==0 then
@@ -119,9 +94,9 @@ end
 log('module entry v'..M.version..' - measuring own initialization only')
 
 local function conf()
-    local defaults={enabled=true,throttle='auto',profile=true,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
-                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=400,gc_stepmul=0,peer_suspend=true,c4_read_pool=true,c4_read_profile=false,c4_input_batch=false,c4_context_batch=false,c4_native_batch=false,c4_idle_batch=false,c4_cpu_profile=false,ui_mods='',scanners='',boot_pause_s=10,
-                    writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
+    local defaults={enabled=true,throttle='auto',profile=true,reentry_max=3,boot_skip=1,boot_s=0,grace_s=60,busy_ms=12,idle_ms=1.5,max_skip=2,snapshot=false,
+                    trip_ms=50,trip_n=3,pause_s=5,exclude='lte/helmet_cape_passives',gc_pause=0,gc_stepmul=0,peer_suspend=true,ui_mods='',scanners='',boot_pause_s=10,
+                    writer_release_s=10,writer_stagger_s=8,writer_norelease='m103_frv',ui_chunks='gun_calibration,helmet_cape_passives',writers='p33_missile_pistol,p34_breacher,gp20_ultimatum,m103_frv,ac8_rack,k9_p,no_large_piercing,stratagem_cooldown,maxigun,tank_cooldown,maelstrom_traverse,tank_clutch_tuner,tank_seat_kit',
                     -- 3.0.8: writer_min_stagger_s ships at the conservative stagger.
                     -- Measured in-mission on this machine with the same mod set:
                     -- 1 s releases gave 33 FPS, 8 s releases gave 69.8 FPS, and the
@@ -151,11 +126,9 @@ local function conf()
                 w:write('# HD2 SmoothBoot - chain governor for the Bingus ecosystem\n')
                 w:write('# deploy order no longer matters: it re-heads itself automatically\n')
                 w:write('enabled=yes\n')
+                w:write('reentry_max=3\n')
                 w:write('# adaptive skip only kicks in above busy_ms per chain call (throttle=no to disable)\n')
                 w:write('throttle=auto\nprofile=yes\n')
-                w:write('# candidate: reuse C4 native read buffers, never cache memory or skip input\n')
-                w:write('c4_read_pool=yes\n')
-                w:write('c4_read_profile=no\nc4_input_batch=no\nc4_context_batch=no\nc4_native_batch=no\nc4_idle_batch=no\nc4_cpu_profile=no\n')
                 w:write('# loading grace: full speed while mods finish their init scans\n')
                 w:write('boot_skip=1\nboot_s=0\ngrace_s=60\n')
                 w:write('# auto-pause: flip mod stop fields during the first N seconds (0 = off)\n')
@@ -176,7 +149,7 @@ local function conf()
                 w:write('# comma separated mod path fragments that must NOT be managed\n')
                 w:write('exclude=lte/helmet_cape_passives\n')
                 w:write('# GC tuning for the whole mod ecosystem (0 = engine defaults)\n')
-                w:write('gc_pause=400\ngc_stepmul=0\n')
+                w:write('gc_pause=0\ngc_stepmul=0\n')
                 w:close()
             end
         end)
@@ -234,21 +207,7 @@ local function conf()
         if v then defaults.profile=(v=='yes' or v=='true' or v=='on') end
         v=line:match('^%s*peer_suspend%s*=%s*(%a+)%s*$')
         if v then defaults.peer_suspend=(v=='yes' or v=='true' or v=='on') end
-        v=line:match('^%s*c4_read_pool%s*=%s*(%a+)%s*$')
-        if v then defaults.c4_read_pool=(v=='yes' or v=='true' or v=='on') end
-        v=line:match('^%s*c4_read_profile%s*=%s*(%a+)%s*$')
-        if v then defaults.c4_read_profile=(v=='yes' or v=='true' or v=='on') end
-        v=line:match('^%s*c4_input_batch%s*=%s*(%a+)%s*$')
-        if v then defaults.c4_input_batch=(v=='yes' or v=='true' or v=='on') end
-        v=line:match('^%s*c4_context_batch%s*=%s*(%a+)%s*$')
-        if v then defaults.c4_context_batch=(v=='yes' or v=='true' or v=='on') end
-        v=line:match('^%s*c4_native_batch%s*=%s*(%a+)%s*$')
-        if v then defaults.c4_native_batch=(v=='yes' or v=='true' or v=='on') end
-        v=line:match('^%s*c4_idle_batch%s*=%s*(%a+)%s*$')
-        if v then defaults.c4_idle_batch=(v=='yes' or v=='true' or v=='on') end
-        v=line:match('^%s*c4_cpu_profile%s*=%s*(%a+)%s*$')
-        if v then defaults.c4_cpu_profile=(v=='yes' or v=='true' or v=='on') end
-        for _,key in ipairs({'boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
+        for _,key in ipairs({'reentry_max','boot_skip','boot_s','grace_s','busy_ms','busy_pct','idle_ms','max_skip',
                              'trip_ms','trip_n','pause_s','gc_pause','gc_stepmul','boot_pause_s',
                              'writer_release_s','writer_stagger_s',
                              'writer_min_stagger_s','writer_fi_factor','writer_fi_floor_ms'}) do
@@ -301,7 +260,7 @@ end
 
 local function excluded_list(spec)
     local t={}
-    for frag in spec:gmatch('[%w%./%-]+') do t[#t+1]=frag:lower() end
+    for frag in spec:gmatch('[%w_./%-]+') do t[#t+1]=frag:lower() end
     for _,p in ipairs(PEER_FRAGMENTS) do t[#t+1]=p end
     return t
 end
@@ -365,9 +324,12 @@ local function ap_scan()
                 -- so the value is native vocabulary, not ours)
                 for _,field in ipairs(AP_KEYS) do
                     if type(rawget(v,field))=='boolean' and rawget(v,field)==false then
-                        if not AP.seen_keys[g..'.'..field] then
-                            AP.seen_keys[g..'.'..field]=true
-                            APorig[g..'.'..field]={tbl=v,key=field,val=false}
+                        -- A global name can be reused for a new state during
+                        -- startup. Save by object identity, not by its alias.
+                        local saved=APorig[v]
+                        if not saved then saved={} APorig[v]=saved end
+                        if saved[field]==nil then
+                            saved[field]=false
                             log('auto-pause: '..g..'.'..field)
                         end
                         rawset(v,field,true)
@@ -395,12 +357,17 @@ end
 local function ap_restore()
     if AP.restored then return end
     AP.restored=true
-    for _,entry in pairs(APorig) do
-        if type(entry.tbl)=='table' then
-            rawset(entry.tbl,entry.key,entry.val)
+    local n=0
+    for tbl,fields in pairs(APorig) do
+        for key,value in pairs(fields) do
+            rawset(tbl,key,value)
+            n=n+1
         end
     end
-    local n=0 for _ in pairs(APorig) do n=n+1 end
+    -- Restoration is one-shot. Keeping these entries after release pins the
+    -- foreign state tables (and everything they own) for the entire session.
+    APorig={}
+    AP.seen_keys={}
     log('auto-pause: released '..n..' field(s)')
 end
 local wrapper               -- forward declaration (splice needs it)
@@ -421,1789 +388,7 @@ local dt_window=0              -- max dt seen in the current 300-frame window
 local cfg=conf()
 local excludes=excluded_list(cfg.exclude or '')
 
--- BEGIN C4 INPUT BATCH
--- AimInputState contract adapted from HD2 C4 Quick Actions, MIT license.
--- Copyright (c) 2026 HD2 C4 Quick Actions contributors
--- Permission is hereby granted, free of charge, to any person obtaining a copy
--- of this software and associated documentation files (the "Software"), to deal
--- in the Software without restriction, including without limitation the rights
--- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
--- copies of the Software, and to permit persons to whom the Software is
--- furnished to do so, subject to the following conditions:
--- The above copyright notice and this permission notice shall be included in all
--- copies or substantial portions of the Software.
--- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
--- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
--- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
--- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
--- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
--- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
--- SOFTWARE.
--- Smooth-owned optional adapter for the measured binding-key scan. Every
--- validation pass reads fresh bytes and compares every original guard.
-local C4Batch={records={},active=0}
-M.c4_input_batch=C4Batch
-function C4Batch.signature(fn)
-    local ok,blob=pcall(string.dump,fn,true)
-    if not ok or #blob>8192 or blob:sub(1,4)~='\27LJ\2' then return nil end
-    local function canonical()
-        local at,parts=5,{}
-        local function take(n)
-            assert(n>=0 and at+n-1<=#blob,'dump_bounds')
-            local value=blob:sub(at,at+n-1);at=at+n;return value
-        end
-        local function num()
-            local start,value,mult=at,0,1
-            for _=1,5 do
-                local b=assert(blob:byte(at));at=at+1
-                value=value+(b%128)*mult
-                if b<128 then return value,blob:sub(start,at-1)end
-                mult=mult*128
-            end
-            error('dump_uleb')
-        end
-        local flags=num();assert(flags%4>=2 and flags%2==0 and flags<16,'dump_flags')
-        parts[1]=blob:sub(1,at-1)
-        local function addnum()local value,raw=num();parts[#parts+1]=raw;return value end
-        local function tablevalue()
-            local kind,raw=num()
-            if kind>=5 then return raw..take(kind-5)end
-            if kind==3 then local _,bytes=num();return raw..bytes end
-            if kind==4 then local _,a=num();local _,b=num();return raw..a..b end
-            assert(kind<=2,'dump_table_kind');return raw
-        end
-        while true do
-            local length=addnum()
-            if length==0 then assert(at==#blob+1);break end
-            local last=at+length
-            local header=take(4);parts[#parts+1]=header
-            local kgc=addnum();addnum();local bc=addnum()
-            parts[#parts+1]=take(bc*4+header:byte(4)*2)
-            for _=1,kgc do
-                local kind=addnum()
-                if kind>=5 then parts[#parts+1]=take(kind-5)
-                elseif kind==1 then
-                    local array=addnum();local hash=addnum()
-                    for _=1,array do parts[#parts+1]=tablevalue()end
-                    local entries={}
-                    for i=1,hash do entries[i]=tablevalue()..tablevalue()end
-                    table.sort(entries)
-                    for _,entry in ipairs(entries)do parts[#parts+1]=entry end
-                elseif kind>1 then
-                    assert(kind<=4,'dump_constant_kind');addnum();addnum()
-                    if kind==4 then addnum();addnum()end
-                end
-            end
-            parts[#parts+1]=take(last-at)
-        end
-        local normalized=table.concat(parts)
-        local a,b=1,0
-        for i=1,#normalized do a=(a+normalized:byte(i))%65521;b=(b+a)%65521 end
-        return #normalized,b*65536+a
-    end
-    local good,length,hash=pcall(canonical)
-    if good then return length,hash end
-end
-function C4Batch.make_reader(D,R)
-    local bit=require('bit')
-    return function(api,game,base,codes,native,spec)
-        spec=spec or {action=D.input_aim_action,code=D.input_aim_code,index=8}
-        -- Arrays belong to this invocation: returned same() closures must keep
-        -- their own bytes even after another snapshot is created.
-        local guard_at,guard_bytes,guard_blocks,guard_count={},{},{},0
-        local function record(at,n,bytes,block)
-            assert(type(at)=='number' and at>=65536 and at+n<0x800000000000 and
-                n>0 and n<=512 and guard_count<1000,'aim_read_bounds')
-            assert(bytes,'aim_read_unavailable');assert(#bytes==n,'aim_short_read')
-            guard_count=guard_count+1
-            guard_at[guard_count]=at;guard_bytes[guard_count]=bytes;guard_blocks[guard_count]=block
-            return bytes
-        end
-        local function read(at,n)
-            assert(type(at)=='number' and at>=65536 and at+n<0x800000000000 and
-                n>0 and n<=512 and guard_count<1000,'aim_read_bounds')
-            return record(at,n,api.read(at,n))
-        end
-        local function ptr(at)return assert(api.pointer(read(at,8)),'aim_pointer')end
-        local function same()
-            local blocks={}
-            for i=1,guard_count do
-                local at,expected,block=guard_at[i],guard_bytes[i],guard_blocks[i]
-                local bytes
-                if block then
-                    local data=blocks[block.at]
-                    if data==nil then
-                        data=api.read(block.at,block.size) or false;blocks[block.at]=data
-                    end
-                    if data then local offset=at-block.at;bytes=data:sub(offset+1,offset+#expected)
-                    else bytes=api.read(at,#expected)end
-                else bytes=api.read(at,#expected)end
-                if bytes~=expected then return false end
-            end
-            return true
-        end
-        local owner=ptr(game+R.global_input_owner)
-        local count=base.u32(read(owner+D.input_inhibit_count,4),0)
-        assert(count<=D.input_inhibit_capacity,'aim_inhibition_count')
-        local h=read(owner+D.input_inhibit_map,20)
-        local n,empty,mult=base.u32(h,8),base.u32(h,12),base.u32(h,16)
-        assert(n<=1024 and (n==0 or bit.band(n,n-1)==0),'aim_inhibition_map')
-        local index
-        if n>0 then
-            local tableptr=assert(api.pointer(h),'aim_inhibition_pointer');local ended=false
-            for i=0,math.min(n,128)-1 do
-                local bytes=read(tableptr+((base.product_low(spec.code,mult)+i)%n)*8,8)
-                local key=base.u32(bytes,0)
-                if key==spec.code then index=base.u32(bytes,4);ended=true;break end
-                if key==empty then ended=true;break end
-            end
-            assert(ended,'aim_inhibition_probe_limit')
-        end
-        local mask
-        if index and index~=0xffffffff then
-            assert(index<count,'aim_inhibition_index')
-            local address=owner+D.input_inhibit_rows+index*24;local bytes=read(address,24)
-            assert(base.u32(bytes,4)==2 and base.u32(bytes,8)==spec.index,'aim_inhibition_identity')
-            mask={address=address,bytes=bytes,mode=base.u32(bytes,0)}
-        end
-        local result={owner=owner,mask=mask,count=count,same=same}
-        if not codes then assert(same(),'aim_state_changed');return result end
-        local state=read(owner+808+32*(2*97+spec.index),1)
-        assert(state:byte()<=1,'aim_action_state');result.held=state:byte()~=0
-        if spec.fire then assert(same(),'fire_input_snapshot_changed');return result end
-        local bh=read(owner+D.input_bindings,20)
-        local capacity=base.u32(bh,8);assert(capacity==256,'aim_binding_capacity')
-        local buckets=assert(api.pointer(bh),'aim_binding_pointer')
-        local wanted={[spec.code]='aim',[codes.deploy]='deploy',[codes.detonate]='detonate'}
-        assert(wanted[spec.code]=='aim','aim_assignment_collision')
-        local lists={}
-        for code,key in pairs(wanted)do
-            -- Per-code scan buffers are local to this call; no frame cache.
-            local blocks={}
-            for probe=0,capacity-1 do
-                local i=(base.product_low(code,base.u32(bh,16))+probe)%capacity
-                local at=buckets+i*328;local first=math.floor(i/12)*12
-                local block=blocks[first]
-                if not block then
-                    local size=(math.min(12,capacity-first)-1)*328+4
-                    local address=buckets+first*328
-                    assert(type(address)=='number' and address>=65536 and
-                        address+size<0x800000000000,'aim_read_bounds')
-                    block={at=address,size=size,data=api.read(address,size) or false};blocks[first]=block
-                end
-                local bytes
-                if block.data then local offset=at-block.at;bytes=record(at,4,block.data:sub(offset+1,offset+4),block)
-                else bytes=read(at,4)end
-                if base.u32(bytes,0)==code then
-                    local size=base.u32(read(at+4,4),0);assert(size<=16,'aim_binding_count')
-                    local mappings={}
-                    for j=0,size-1 do mappings[#mappings+1]={at=at+8+j*20,bytes=read(at+8+j*20,20)}end
-                    lists[key]=mappings;break
-                end
-            end
-        end
-        assert(lists.aim and lists.deploy and lists.detonate,'aim_binding_missing')
-        assert(same(),'aim_binding_changed')
-        local chosen=native.input_mapping(owner,spec.action)
-        if chosen and chosen~=0 then
-            for _,v in ipairs(lists.aim)do if v.at==chosen then result.aim=v.bytes;break end end
-            assert(result.aim,'aim_selected_mapping_outside_bucket')
-        end
-        result.deploy=lists.deploy;result.detonate=lists.detonate
-        assert(same(),'aim_snapshot_changed');return result
-    end
-end
-function C4Batch.attach(target)
-    if not cfg.enabled or not cfg.c4_input_batch or type(target)~='table' or getmetatable(target) then return false end
-    local original=rawget(target,'read')
-    if type(original)~='function' or function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' or
-       is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
-    local length,hash=C4Batch.signature(original)
-    if not ((length==2920 and hash==3910151087) or (length==2847 and hash==3465483342)) then
-        log('C4 input batch: unsupported fingerprint '..tostring(length)..'/'..tostring(hash)..'; unchanged')
-        return false
-    end
-    local captured={}
-    for i=1,8 do local name,value=debug.getupvalue(original,i);if not name then break end;captured[name]=value end
-    if type(captured.D)~='table' or type(captured.R)~='table' or captured.bit~=require('bit') then return false end
-    local replacement=C4Batch.make_reader(captured.D,captured.R)
-    C4Batch.records[target]={original=original,replacement=replacement}
-    rawset(target,'read',replacement);C4Batch.active=1
-    log('C4 input batch: active (verified original reader; all guards and native actions preserved)')
-    return true
-end
-function C4Batch.restore()
-    for target,record in pairs(C4Batch.records)do
-        if rawget(target,'read')==record.replacement then rawset(target,'read',record.original)end
-        C4Batch.records[target]=nil
-    end
-    C4Batch.active=0
-end
--- END C4 INPUT BATCH
 
--- BEGIN C4 CONTEXT BATCH
--- ContextReader contract adapted from HD2 C4 Quick Actions under the MIT
--- notice above. Every original guard is compared to fresh bytes. Validation
--- and scan-local template reads batch fields with individual-read fallback.
-local GuardBatch=(function()
--- Private validation-read prototype. No cached native bytes or native writes.
-local M={}
--- Bounded immutable layout metadata only. Neither guards, captured bytes,
--- readers nor accounting callbacks survive through this shared cache.
-local layouts={}
-function M.clear_plans()layouts={}end
-function M.new(guards,api,account)
-    local plan,sizes,addresses={},{},{}
-    local function rebuild()
-        local total=0
-        assert(#guards<=768,'snapshot_validation_budget')
-        for i,g in ipairs(guards)do
-            local n=#g.bytes;total=total+n
-            assert(n>0 and n<=4096 and total<=32768,'snapshot_validation_budget')
-            sizes[i]=n;addresses[i]=g.at
-        end
-        for slot,layout in ipairs(layouts)do
-            local count=#sizes
-            local matches=#layout.sizes==count and layout.addresses[count]==addresses[count]
-                and layout.sizes[count]==sizes[count]
-            if matches then for i,at in ipairs(addresses)do
-                if layout.addresses[i]~=at or layout.sizes[i]~=sizes[i] then
-                    matches=false;break
-                end
-            end end
-            if matches then
-                plan=layout.plan
-                -- Keep recently used layouts close; the entire cache is <=8.
-                if slot>1 then table.remove(layouts,slot);table.insert(layouts,1,layout)end
-                return
-            end
-        end
-        local sorted={}
-        for i,g in ipairs(guards)do
-            local n=sizes[i]
-            sorted[i]={at=g.at,last=g.at+n,index=i}
-        end
-        table.sort(sorted,function(a,b)return a.at<b.at end)
-        local proposed={};local bytes=0;plan={}
-        for _,g in ipairs(sorted)do
-            local last=proposed[#proposed]
-            if last and g.at<=last.last+32 and math.max(last.last,g.last)-last.at<=4096 then
-                last.last=math.max(last.last,g.last)
-            else last={at=g.at,last=g.last};proposed[#proposed+1]=last end
-            plan[g.index]=last
-        end
-        for _,p in ipairs(proposed)do bytes=bytes+p.last-p.at end
-        -- Never exceed the original validation budget; sparse ranges stay small.
-        -- Reserve the complete original fallback cost as well. A failure of
-        -- every larger read must still fit the existing read/byte budgets.
-        if bytes+total>32768 or #proposed+#guards>768 or bytes>total*2 then
-            for _,g in ipairs(sorted)do plan[g.index]={at=g.at,last=g.last}end
-        end
-        table.insert(layouts,1,{addresses=addresses,sizes=sizes,plan=plan})
-        if #layouts>8 then layouts[9]=nil end
-    end
-    return function()
-        local valid=#sizes==#guards
-        if valid then for i,g in ipairs(guards)do
-            if sizes[i]~=#g.bytes or addresses[i]~=g.at then valid=false;break end
-        end end
-        if not valid then sizes,addresses={},{};rebuild()end
-        local data={}
-        for i,g in ipairs(guards)do
-            local p=plan[i];local b=data[p]
-            if b==nil then
-                local n=p.last-p.at
-                if account then account(n)end
-                b=api.read(p.at,n)
-                if p.at==g.at and n==#g.bytes then
-                    assert(b,'read_unavailable');assert(#b==n,'short_read')
-                end
-                -- Extra bytes can cross an unreadable gap: retry the original
-                -- field reads, in their original comparison order.
-                if not b or #b~=n then b=false end
-                data[p]=b
-            end
-            local value
-            if b then value=b:sub(g.at-p.at+1,g.at-p.at+#g.bytes)
-            else
-                if account then account(#g.bytes)end
-                value=assert(api.read(g.at,#g.bytes),'read_unavailable')
-                assert(#value==#g.bytes,'short_read')
-            end
-            if value~=g.bytes then return false end
-        end
-        return true
-    end
-end
-return M
-end)()
-local C4Context={records={},active=0,guard_batch=GuardBatch}
-M.c4_context_batch=C4Context
-function C4Context.make_reader(original,omit_templates)
-    local R,D
-local ContextReader=(function()
-
-local bit = require('bit')
-local M = {}
-local INVALID = 0xffffffff
-local DETONATOR = '51f50d6321f52f3d'
-local CHARGE = '9b75217d8312dd67'
-local AVATAR = '4d1c334d294dfa97'
-local function u32(b,o)
-    assert(b and o>=0 and o+4<=#b,'short_u32')
-    local a,c,d,e=b:byte(o+1,o+4)
-    return a+c*256+d*65536+e*16777216
-end
-local function resource(b)
-    local out={}
-    for i=8,1,-1 do out[#out+1]=string.format('%02x',b:byte(i)) end
-    return table.concat(out)
-end
-local function hex(b)
-    return (b:gsub('.',function(c) return string.format('%02x',c:byte()) end))
-end
-local function product_low(a,b)
-
-    return ((a%65536)*(b%65536)+
-        ((math.floor(a/65536)*(b%65536)+(a%65536)*math.floor(b/65536))%65536)*65536)%4294967296
-end
-M.u32=u32
-function M.f32(b,o)
-    local n=u32(b,o);local sign=n>=0x80000000 and -1 or 1
-    local exponent=math.floor(n/0x800000)%256;local fraction=n%0x800000
-    assert(exponent~=255,'nonfinite_native_float')
-    return sign*(exponent==0 and fraction*2^-149 or (1+fraction/0x800000)*2^(exponent-127))
-end
-M.product_low=product_low
-
-function M.snapshot(api,game,extend)
-    local guards,reads,bytes={},0,0
-    local actual_reads,actual_bytes=0,0
-    local validation_reads,validation_bytes=0,0
-    local extension_result
-    local owner,extension_regions
-    local function read(at,n,guard,prefetched)
-        assert(type(at)=='number' and at>=65536 and at+n<0x800000000000,'invalid_address')
-        reads=reads+1;bytes=bytes+n
-        assert(n>0 and n<=4096 and reads<=768 and bytes<=32768,'snapshot_budget')
-        local b=prefetched
-        -- The original ActionReader/ReloadReader obtains these template pointers
-        -- through e.ptr before its 16-byte probe loop. Batch only that declared
-        -- region during this extension call; never retain bytes for a later
-        -- snapshot, native action, or escaped e.read callback.
-        if b==nil and guard and n==16 and extension_regions then
-            for _,region in ipairs(extension_regions)do
-                local offset=at-region.at
-                if offset>=0 and offset<region.capacity*16 and offset%16==0 then
-                    local slot=offset/16
-                    if not region.individual and (not region.block or slot<region.slot or slot>=region.slot+region.count)then
-                        region.slot=slot
-                        region.count=math.min(16,region.capacity-slot,769-reads)
-                        local size=region.count*16
-                        if region.count>1 and at+size<0x800000000000 then
-                            actual_reads=actual_reads+1;actual_bytes=actual_bytes+size
-                            local ok,value=pcall(api.read,at,size)
-                            if ok and type(value)=='string' and #value==size then region.block=value
-                            else region.individual=true;region.block=nil end
-                        else region.individual=true;region.block=nil end
-                    end
-                    if region.block then
-                        local start=(slot-region.slot)*16
-                        b=region.block:sub(start+1,start+16)
-                    end
-                    break
-                end
-            end
-        end
-        if b==nil then
-            actual_reads=actual_reads+1;actual_bytes=actual_bytes+n
-            b=api.read(at,n)
-        end
-        b=assert(b,'read_unavailable')
-        assert(#b==n,'short_read')
-        if guard then guards[#guards+1]={at=at,bytes=b} end
-        return b
-    end
-    local function ptr(at,guard)
-        local p=assert(api.pointer(read(at,8,guard)),'pointer_unavailable')
-        assert(p>=65536 and p<0x800000000000,'invalid_pointer')
-        if extension_regions and guard and owner then
-            local kind,capacity
-            if type(D.rounds_templates)=='number' and at==owner+D.rounds_templates then
-                kind,capacity='rounds',D.rounds_capacity
-            elseif type(D.reload_templates)=='number' and at==owner+D.reload_templates then
-                kind,capacity='reload',D.reload_capacity
-            end
-            if kind and type(capacity)=='number' and capacity>0 and capacity<=2048 and
-               capacity%1==0 and p+capacity*16<0x800000000000 then
-                -- Reading the pointer again begins a fresh scan, including when
-                -- both template families happen to share the same native range.
-                for i=#extension_regions,1,-1 do
-                    if extension_regions[i].kind==kind then table.remove(extension_regions,i)end
-                end
-                table.insert(extension_regions,1,{kind=kind,at=p,capacity=capacity})
-            end
-        end
-        return p
-    end
-    local function global(rva) return ptr(game+rva,true) end
-    local function lookup(at,key,limit)
-        local h=read(at,20,true)
-        local n,empty,mult=u32(h,8),u32(h,12),u32(h,16)
-        assert(n<=limit and (n==0 or bit.band(n,n-1)==0),'unsupported_map')
-        if n==0 or key==empty or key==INVALID then return nil end
-        local p=assert(api.pointer(h),'map_pointer_unavailable')
-        for probe=0,math.min(n,128)-1 do
-            local slot=(product_low(key,mult)+probe)%n
-            local row=read(p+slot*8,8,true)
-            local k=u32(row,0)
-            if k==key then
-                local index=u32(row,4)
-                if index~=INVALID then return index end
-                return nil
-            end
-            if k==empty then return nil end
-        end
-        error('map_probe_limit')
-    end
-    local batched
-    local function checked()
-        if not batched then
-            batched=GuardBatch.new(guards,api,function(n)
-                validation_reads=validation_reads+1;validation_bytes=validation_bytes+n
-            end)
-        end
-        return batched()
-    end
-    local row={current_weapon='UNKNOWN',current_fire_mode='UNKNOWN',
-        action_result='OBSERVATION_ONLY',context_status='unresolved',
-        c4_guard_candidate=false,layout_evidence='STATIC_DERIVATION_PENDING_LIVE_VALIDATION'}
-    local function finish(reason)
-        if not checked() then return nil,'context_changed_during_read' end
-        if reason~='c4_context_observed' then row.c4_guard_candidate=false end
-        row.context_status=reason;row.memory_reads=actual_reads+validation_reads;row.memory_bytes=actual_bytes+validation_bytes
-        return row,nil,extension_result
-    end
-    local mode=read(global(R.global_mode),0x44,true)
-    if u32(mode,8)==0 or u32(mode,0x40)<1 or u32(mode,0x40)>7 then
-        return finish('waiting_for_mission')
-    end
-    local pm=global(R.global_player)
-    local counts=read(pm+0x84,8,true)
-    assert(u32(counts,0)<=4 and u32(counts,4)<=4,'unsupported_player_counts')
-    if u32(counts,0)==0 or u32(counts,4)==0 then return finish('waiting_for_local_player') end
-    local player=read(ptr(pm+0xe8,true),24,true)
-    if bit.band(player:byte(21),1)==0 then return finish('local_player_not_owned') end
-    local unit=u32(read(pm+0x3a8,4,true),0)
-    if unit==0x7fff then return finish('waiting_for_avatar') end
-    owner=global(R.global_owner)
-    local ei=lookup(owner+D.entity_unit_map,unit,1048576)
-    if not ei then return finish('avatar_map_missing') end
-    assert(ei<262144,'entity_index_limit')
-    local entity=read(owner+D.entity_array+ei*24,24,true)
-    if resource(entity)~=AVATAR or bit.band(entity:byte(21),1)==0 then
-        return finish('avatar_identity_rejected')
-    end
-    local id=u32(entity,8)
-    local avatar=global(R.global_avatar)
-    local ai=lookup(avatar+0xf8,id,64)
-    local n=u32(read(avatar+0x6c,4,true),0)
-    assert(n<=8,'avatar_count_limit')
-    if not ai or ai>=n then return finish('avatar_registry_missing') end
-    if read(ptr(avatar+0x110+ai*8,true),24,true)~=entity then
-        return finish('avatar_registry_mismatch')
-    end
-    row.local_entity_id=id;row.local_avatar_index=ai
-    local inventory=global(R.global_inventory)
-    local ii=lookup(inventory+0x28,id,65536)
-    local count=u32(read(inventory+0x14,4,true),0)
-    assert(count<=4096,'inventory_count_limit')
-    if not ii or ii>=count then return finish('inventory_missing') end
-    if read(ptr(ptr(inventory+0x40,true)+ii*8,true),24,true)~=entity then
-        return finish('inventory_owner_mismatch')
-    end
-    local state=read(ptr(inventory+0x50,true)+ii*48,48,true)
-    row.inventory_words={}
-    for i=0,11 do row.inventory_words[tostring(i*4)]=u32(state,i*4) end
-    local slot=u32(state,0x1c)
-    row.selected_slot=slot
-    local offsets={[1]=0,[2]=4,[3]=8,[4]=16,[5]=16,[6]=12}
-    if not offsets[slot] then return finish('no_selected_weapon') end
-    local weapon_id=u32(state,offsets[slot])
-    row.selected_entity_id=weapon_id
-    if weapon_id==0 or weapon_id==INVALID then return finish('selected_entity_missing') end
-    local wi=lookup(owner+D.entity_id_map,weapon_id,1048576)
-    if not wi then return finish('selected_entity_missing') end
-    assert(wi<262144,'weapon_entity_index_limit')
-    local weapon=read(owner+D.entity_array+wi*24,24,true)
-    if u32(weapon,8)~=weapon_id then return finish('selected_entity_mismatch') end
-    local hash=resource(weapon)
-    row.current_weapon_resource=hash
-    row.current_weapon=hash==DETONATOR and 'C4_DETONATOR' or hash==CHARGE and 'C4_CHARGE' or 'OTHER'
-    row.weapon_owned=bit.band(weapon:byte(21),1)~=0
-    row.c4_guard_candidate=hash==DETONATOR and row.weapon_owned
-
-
-    if not row.c4_guard_candidate then return finish('selected_weapon_observed') end
-
-    local wd=global(R.global_weapon_data)
-    local di=lookup(wd+0x30,weapon_id,65536)
-    local dn=u32(read(wd+0x1c,4,true),0)
-    assert(dn<=4096,'weapon_data_count_limit')
-    if di and di<dn then
-        if read(ptr(ptr(wd+0x48,true)+di*8,true),24,true)~=weapon then
-            return finish('weapon_data_owner_mismatch')
-        end
-        local base=ptr(wd+0x58,true)+di*D.weapon_data_stride
-        local types=read(base+D.weapon_types,16,true)
-        local packed=read(ptr(wd+0x60,true)+di*12,12,true)
-        row.weapon_state_12=hex(packed)
-        row.weapon_state_flags=hex(read(ptr(wd+0x50,true)+di*2,2,true))
-        row.weapon_function_types={};row.weapon_function_values={}
-        local shifts={[1]=4,[7]=0,[8]=2,[9]=6,[10]=8,[11]=10,[12]=14}
-        for i=0,3 do
-            local k=u32(types,i*4)
-            row.weapon_function_types[tostring(i)]=k
-            if shifts[k] then
-                row.weapon_function_values[tostring(i)]=bit.band(bit.rshift(u32(packed,4),shifts[k]),3)
-            end
-        end
-    else row.weapon_data_status='missing' end
-
-
-
-    -- Only an exact private read-only fire-maintenance consumer may omit
-    -- diagnostic templates. Ordinary snapshots/actions retain all original reads.
-    if not omit_templates then
-    local templates=ptr(owner+D.ability_templates,true)
-    local start=0
-    for b=8,1,-1 do start=(start*256+weapon:byte(b))%D.ability_capacity end
-    row.ability_template_status='absent'
-    -- Fresh, scan-local blocks only. Unvisited slots never become guards.
-    -- Extra unreadable bytes/short results/reader exceptions fall back to
-    -- the original individual reads for the rest of this scan. Logical
-    -- snapshot bounds still count every original visited 16-byte field.
-    local block,block_slot,block_count
-    local individual=false
-    for probe=0,D.ability_capacity-1 do
-        local slot=(start+probe)%D.ability_capacity
-        if not individual and (not block or slot<block_slot or slot>=block_slot+block_count) then
-            block_slot=slot
-            block_count=math.min(16,D.ability_capacity-slot,D.ability_capacity-probe,768-reads)
-            local at=templates+slot*16;local n=block_count*16
-            if block_count>1 and bytes+16<=32768 and type(at)=='number' and at>=65536 and at+n<0x800000000000 then
-                actual_reads=actual_reads+1;actual_bytes=actual_bytes+n
-                local ok,value=pcall(api.read,at,n)
-                if ok and type(value)=='string' and #value==n then block=value
-                else individual=true;block=nil end
-            else individual=true;block=nil end
-        end
-        local t=read(templates+slot*16,16,true,
-            block and block:sub((slot-block_slot)*16+1,(slot-block_slot+1)*16) or nil)
-        local key=resource(t)
-        if key=='0000000000000000' then break end
-        if key==hash then
-            local ti=u32(t,8)
-            assert(ti<D.ability_capacity,'ability_template_index_limit')
-            local config=read(templates+D.ability_capacity*16+ti*0x58,0x58,true)
-            row.ability_template_status='present';row.ability_template_hex=hex(config)
-            row.ability_descriptors={}
-            for i=0,1 do
-                local o=i*40
-                row.ability_descriptors[tostring(i)]={weapon_ability_id=u32(config,o),
-                    owner_ability_id=u32(config,o+4),other_ability_id=u32(config,o+8),
-                    flag_32=config:byte(o+33),flag_33=config:byte(o+34)}
-            end
-            break
-        end
-    end
-    end
-    if extend then
-
-
-
-        extension_regions={}
-        local ok,result=pcall(extend,{read=read,ptr=ptr,global=global,lookup=lookup,
-            checked=checked,u32=u32,hex=hex,resource=resource,entity=entity,weapon=weapon,
-            id=id,weapon_id=weapon_id,owner=owner,avatar=avatar,avatar_index=ai,
-            weapon_data=wd,weapon_data_index=di},row)
-        extension_regions=nil
-        if ok then
-            extension_result=result;row.action_context_status='validated'
-        else
-            extension_result=nil;row.action_context_status='rejected'
-            row.action_diagnostic=tostring(result)
-            row.action_context_error=row.action_diagnostic:match(':%d+: (.*)$') or row.action_diagnostic
-            row.action_gate='ACTION_CONTEXT_REJECTED'
-        end
-    end
-    return finish('c4_context_observed')
-end
-return M
-
-end)()
-
-    local replacement=ContextReader.snapshot
-    local captured={}
-    for i=1,32 do
-        local name,value=debug.getupvalue(original,i);if not name then break end
-        captured[name]={index=i,value=value}
-    end
-    assert(type(captured.R)=='table' and type(captured.R.value)=='table' and
-           type(captured.D)=='table' and type(captured.D.value)=='table','context_layout_not_ready')
-    -- Share the original upvalue cells, including dynamic R/D and helpers.
-    -- No polling, stale layout copies, or replacement of another mod's helpers.
-    for i=1,32 do
-        local name=debug.getupvalue(replacement,i);if not name then break end
-        if name~='GuardBatch' and name~='omit_templates' then
-            local entry=assert(captured[name],'context_upvalue_missing:'..name)
-            debug.upvaluejoin(replacement,i,original,entry.index)
-        end
-    end
-    return replacement
-end
-function C4Context.attach(target)
-    if not cfg.enabled or not cfg.c4_context_batch or type(target)~='table' or
-       getmetatable(target) or type(debug.upvaluejoin)~='function' or
-       is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
-    local original=rawget(target,'snapshot')
-    if type(original)~='function' or
-       function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
-    local length,hash=C4Batch.signature(original)
-    if not ((length==6667 and hash==1783324827) or (length==6435 and hash==2083852633)) then
-        return false
-    end
-    local ok,replacement=pcall(C4Context.make_reader,original)
-    if not ok then log('C4 context batch: unsupported capture; unchanged');return false end
-    C4Context.records[target]={original=original,replacement=replacement}
-    rawset(target,'snapshot',replacement);C4Context.active=1
-    log('C4 context batch: active (verified original snapshot; fresh checks, scan-local template blocks, native actions preserved)')
-    return true
-end
-function C4Context.restore()
-    for target,record in pairs(C4Context.records)do
-        if rawget(target,'snapshot')==record.replacement then rawset(target,'snapshot',record.original)end
-        C4Context.records[target]=nil
-    end
-    C4Context.active=0
-    GuardBatch.clear_plans()
-end
--- END C4 CONTEXT BATCH
-
--- BEGIN C4 UI SCOPE
--- The verified NativeUiGuard consumer only uses two avatar flags. Keep its
--- native UI-stack reader intact; do not build an action/ammo capability here.
--- Every mission/player/avatar/selected-C4 guard is read and validated fresh.
-local C4UI={records={},active=0,attempts=0}
-M.c4_ui_scope=C4UI
-local function ui_upvalue(fn,wanted)
-    for i=1,64 do
-        local name,value=debug.getupvalue(fn,i);if not name then break end
-        if name==wanted then return value,i end
-    end
-end
-function C4UI.make_scope_reader(original)
-    local R,D,u32,resource,hex,product_low,bit,AVATAR,DETONATOR,INVALID
-    local function snapshot(api,game,extend)
-        local guards,reads,bytes={},0,0
-        local validation_reads,validation_bytes=0,0
-        local function read(at,n,guard)
-            assert(type(at)=='number' and at>=65536 and at+n<0x800000000000,'invalid_address')
-            reads=reads+1;bytes=bytes+n
-            assert(n>0 and n<=4096 and reads<=768 and bytes<=32768,'snapshot_budget')
-            local b=assert(api.read(at,n),'read_unavailable')
-            assert(#b==n,'short_read')
-            if guard then guards[#guards+1]={at=at,bytes=b}end
-            return b
-        end
-        local function ptr(at,guard)
-            local p=assert(api.pointer(read(at,8,guard)),'pointer_unavailable')
-            assert(p>=65536 and p<0x800000000000,'invalid_pointer')
-            return p
-        end
-        local function global(rva)return ptr(game+rva,true)end
-        local function lookup(at,key,limit)
-            local h=read(at,20,true)
-            local n,empty,mult=u32(h,8),u32(h,12),u32(h,16)
-            assert(n<=limit and (n==0 or bit.band(n,n-1)==0),'unsupported_map')
-            if n==0 or key==empty or key==INVALID then return nil end
-            local p=assert(api.pointer(h),'map_pointer_unavailable')
-            for probe=0,math.min(n,128)-1 do
-                local row=read(p+((product_low(key,mult)+probe)%n)*8,8,true)
-                local k=u32(row,0)
-                if k==key then
-                    local index=u32(row,4)
-                    return index~=INVALID and index or nil
-                end
-                if k==empty then return nil end
-            end
-            error('map_probe_limit')
-        end
-        local validate
-        local function checked()
-            if not validate then
-                validate=GuardBatch.new(guards,api,function(n)
-                    validation_reads=validation_reads+1;validation_bytes=validation_bytes+n
-                    assert(validation_reads<=768 and validation_bytes<=32768,'snapshot_validation_budget')
-                end)
-            end
-            return validate()
-        end
-        local function finish(extra)
-            if not checked()then return nil,'context_changed_during_read'end
-            return {},nil,extra
-        end
-        local mode=read(global(R.global_mode),0x44,true)
-        if u32(mode,8)==0 or u32(mode,0x40)<1 or u32(mode,0x40)>7 then return finish()end
-        local pm=global(R.global_player)
-        local counts=read(pm+0x84,8,true)
-        assert(u32(counts,0)<=4 and u32(counts,4)<=4,'unsupported_player_counts')
-        if u32(counts,0)==0 or u32(counts,4)==0 then return finish()end
-        local player=read(ptr(pm+0xe8,true),24,true)
-        if bit.band(player:byte(21),1)==0 then return finish()end
-        local unit=u32(read(pm+0x3a8,4,true),0)
-        if unit==0x7fff then return finish()end
-        local owner=global(R.global_owner)
-        local ei=lookup(owner+D.entity_unit_map,unit,1048576)
-        if not ei then return finish()end
-        assert(ei<262144,'entity_index_limit')
-        local entity=read(owner+D.entity_array+ei*24,24,true)
-        if resource(entity)~=AVATAR or bit.band(entity:byte(21),1)==0 then return finish()end
-        local id=u32(entity,8)
-        local avatar=global(R.global_avatar)
-        local ai=lookup(avatar+0xf8,id,64)
-        local n=u32(read(avatar+0x6c,4,true),0)
-        assert(n<=8,'avatar_count_limit')
-        if not ai or ai>=n then return finish()end
-        if read(ptr(avatar+0x110+ai*8,true),24,true)~=entity then return finish()end
-        local inventory=global(R.global_inventory)
-        local ii=lookup(inventory+0x28,id,65536)
-        local count=u32(read(inventory+0x14,4,true),0)
-        assert(count<=4096,'inventory_count_limit')
-        if not ii or ii>=count then return finish()end
-        if read(ptr(ptr(inventory+0x40,true)+ii*8,true),24,true)~=entity then return finish()end
-        local state=read(ptr(inventory+0x50,true)+ii*48,48,true)
-        local slot=u32(state,0x1c)
-        local offsets={[1]=0,[2]=4,[3]=8,[4]=16,[5]=16,[6]=12}
-        if not offsets[slot]then return finish()end
-        local weapon_id=u32(state,offsets[slot])
-        if weapon_id==0 or weapon_id==INVALID then return finish()end
-        local wi=lookup(owner+D.entity_id_map,weapon_id,1048576)
-        if not wi then return finish()end
-        assert(wi<262144,'weapon_entity_index_limit')
-        local weapon=read(owner+D.entity_array+wi*24,24,true)
-        if u32(weapon,8)~=weapon_id or resource(weapon)~=DETONATOR or
-            bit.band(weapon:byte(21),1)==0 then return finish()end
-        local extra=extend({read=read,avatar=avatar,avatar_index=ai})
-        return finish(extra)
-    end
-    for i=1,32 do
-        local name=debug.getupvalue(snapshot,i);if not name then break end
-        if name~='GuardBatch' then
-            local _,slot=ui_upvalue(original,name)
-            assert(slot,'ui_scope_upvalue_missing:'..name)
-            debug.upvaluejoin(snapshot,i,original,slot)
-        end
-    end
-    return snapshot
-end
-function C4UI.attach(target)
-    if not cfg.enabled or not cfg.c4_context_batch or type(target)~='function' or
-        type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes) or
-        function_chunk(target):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
-    local owned=C4UI.records[target]
-    if owned then
-        local _,value=debug.getupvalue(target,owned.slot)
-        if value==owned.replacement then return true end
-    end
-    local length,hash=C4Batch.signature(target)
-    if not ((length==1108 and hash==589953478) or (length==927 and hash==52868270))then return false end
-    local original,slot=ui_upvalue(target,'avatar_ui')
-    if type(original)~='function' or
-        function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
-    length,hash=C4Batch.signature(original)
-    if not ((length==352 and hash==2875083371) or (length==311 and hash==1218919096))then return false end
-    local initial_base=ui_upvalue(original,'base')
-    if type(initial_base)~='table' or getmetatable(initial_base)then return false end
-    local record=C4Context.records[initial_base]
-    local current=rawget(initial_base,'snapshot')
-    local full=record and current==record.replacement and record.original or current
-    if type(full)~='function' or
-        function_chunk(full):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
-    length,hash=C4Batch.signature(full)
-    if not ((length==6667 and hash==1783324827) or (length==6435 and hash==2083852633))then return false end
-    local ok,scope=pcall(C4UI.make_scope_reader,full)
-    if not ok then return false end
-    local api,game,base,AvatarFlags,D
-    local function replacement()
-        local context=C4Context.records[initial_base]
-        local method=type(base)=='table' and rawget(base,'snapshot')
-        if not cfg.enabled or not cfg.c4_context_batch or
-            is_excluded('mods/etxp/c4_boundary_probe',excludes) or base~=initial_base or
-            not (method==full or context and method==context.replacement) then return original()end
-        local success,_,_,extra=pcall(scope,api,game,function(e)
-            local flags=e.read(e.avatar+0x53e880+e.avatar_index*0x1238,24,true)
-            return {tactical_map_active=AvatarFlags.has(flags,D.tactical_map),
-                weapon_menu_active=AvatarFlags.has(flags,D.weapon_menu)}
-        end)
-        return success and extra or {}
-    end
-    for i=1,32 do
-        local name=debug.getupvalue(replacement,i);if not name then break end
-        if name=='api' or name=='game' or name=='base' or name=='AvatarFlags' or name=='D'then
-            local _,index=ui_upvalue(original,name);if not index then return false end
-            debug.upvaluejoin(replacement,i,original,index)
-        end
-    end
-    debug.setupvalue(target,slot,replacement)
-    C4UI.records[target]={original=original,replacement=replacement,slot=slot}
-    C4UI.active=C4UI.active+1
-    log('C4 UI scope: active (fresh identity and map/menu flags; complete native UI stack retained)')
-    return true
-end
-function C4UI.restore()
-    for target,record in pairs(C4UI.records)do
-        local _,value=debug.getupvalue(target,record.slot)
-        if value==record.replacement then debug.setupvalue(target,record.slot,record.original)end
-        C4UI.records[target]=nil
-    end
-    C4UI.active=0;C4UI.attempts=0
-end
--- END C4 UI SCOPE
-
--- BEGIN C4 FIRE SCOPE
--- Existing identical MUTED leases need no diagnostic ability template table.
--- Original sync/stop and every new acquisition/write remain authoritative.
-local C4FireScope={records={},active=0,attempts=0}
-M.c4_fire_scope=C4FireScope
-function C4FireScope.attach(target)
-    if not cfg.enabled or not cfg.c4_context_batch or type(target)~='table' or getmetatable(target)or
-        type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes)then return false end
-    local owned=C4FireScope.records[target]
-    if owned then
-        local _,value=debug.getupvalue(owned.sync,owned.slot)
-        if rawget(target,'sync')==owned.sync and value==owned.replacement then return true end
-        return false
-    end
-    local sync=rawget(target,'sync')
-    if type(sync)~='function' or function_chunk(sync):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe'then return false end
-    local n,h=C4Batch.signature(sync)
-    if not ((n==1133 and h==1142545934) or (n==1086 and h==1564724374))then return false end
-    local original,slot=ui_upvalue(sync,'current')
-    n,h=C4Batch.signature(original)
-    if not ((n==1260 and h==115342007) or (n==1187 and h==3325092559))then return false end
-    local initial_base=ui_upvalue(original,'base')
-    if type(initial_base)~='table' or getmetatable(initial_base)then return false end
-    local own_context=C4Context.records[initial_base]
-    local method=rawget(initial_base,'snapshot')
-    local full=own_context and method==own_context.replacement and own_context.original or method
-    n,h=C4Batch.signature(full)
-    if not ((n==6667 and h==1783324827) or (n==6435 and h==2083852633))then return false end
-    local self=ui_upvalue(sync,'self')
-    if self~=target then return false end
-    local known_stop=rawget(target,'stop')
-    n,h=C4Batch.signature(known_stop)
-    if not (n==443 and (h==3472837248 or h==3092073073))then return false end
-    local ok,snapshot=pcall(C4Context.make_reader,full,true)
-    if not ok then return false end
-    local base,api,game,R,NORMAL,MUTED
-    local function lean_current()
-        return snapshot(api,game,function(e,row)
-            local wm=e.global(R.global_weapon)
-            local wi=assert(e.lookup(wm+0x28,e.weapon_id,65536),'fire_gate_component_missing')
-            assert(wi<4096,'fire_gate_index_limit')
-            assert(e.read(e.ptr(e.ptr(wm+0x40,true)+wi*8,true),24,true)==e.weapon,'fire_gate_registry_mismatch')
-            local address=e.ptr(wm+0x50,true)+wi*40
-            local flags=e.u32(e.read(address,4,true),0)
-            row.weapon_driver_flags=string.format('%08x',flags)
-            assert(flags==NORMAL or flags==MUTED,'fire_gate_unsupported_flags')
-            local driver=e.global(R.global_fire_latch)
-            local di=assert(e.lookup(driver+0x20,e.weapon_id,65536),'fire_gate_driver_missing')
-            assert(di<4096,'fire_gate_driver_index_limit')
-            assert(e.read(e.ptr(e.ptr(driver+0x38,true)+di*8,true),24,true)==e.weapon,'fire_gate_driver_identity_mismatch')
-            local held=e.read(e.ptr(driver+0x48,true)+di*8,1,true):byte()~=0
-            return {weapon_id=e.weapon_id,weapon=e.weapon,owner=e.owner,manager=wm,
-                address=address,flags=flags,held=held,same=e.checked,
-                identity=table.concat({e.hex(e.entity),e.hex(e.weapon),tostring(e.owner)},':')}
-        end)
-    end
-    for i=1,32 do local name=debug.getupvalue(lean_current,i);if not name then break end
-        if name~='snapshot'then
-            local _,index=ui_upvalue(original,name)
-            if not index then return false end
-            debug.upvaluejoin(lean_current,i,original,index)
-        end
-    end
-    -- Remember current's collaborators; any later capture change selects the
-    -- complete original current, rather than applying a partial unknown path.
-    local captures={}
-    for i=1,32 do local name,value=debug.getupvalue(original,i);if not name then break end
-        captures[i]={value=value}
-    end
-    local binding
-    local function replacement()
-        local lease=rawget(target,'lease')
-        if C4FireScope.records[target]~=binding or not lease or not cfg.enabled or not cfg.c4_context_batch or
-            is_excluded('mods/etxp/c4_boundary_probe',excludes) or
-            rawget(target,'sync')~=sync or rawget(target,'stop')~=known_stop or
-            ui_upvalue(sync,'self')~=target then return original()end
-        for i,entry in ipairs(captures)do
-            local _,current=debug.getupvalue(original,i)
-            if current~=entry.value then return original()end
-        end
-        local context=C4Context.records[initial_base]
-        local current=rawget(initial_base,'snapshot')
-        if not (current==full or context and current==context.replacement and context.original==full)then
-            return original()
-        end
-        local ok,row,why,plan=pcall(lean_current)
-        if ok and plan and rawget(target,'lease')==lease and plan.identity==lease.identity and plan.flags==MUTED then
-            -- Original sync cannot acquire a new lease on this unchanged owned
-            -- branch. Every acquisition, identity change or failure uses full.
-            return row,why,plan
-        end
-        return original()
-    end
-    -- MUTED is shared with the authoritative current, even across layout reload.
-    local _,muted_slot=ui_upvalue(original,'MUTED')
-    for i=1,32 do local name=debug.getupvalue(replacement,i);if not name then break end
-        if name=='MUTED'then debug.upvaluejoin(replacement,i,original,muted_slot)end
-    end
-    binding={sync=sync,slot=slot,original=original,replacement=replacement}
-    C4FireScope.records[target]=binding
-    debug.setupvalue(sync,slot,replacement)
-    C4FireScope.active=C4FireScope.active+1
-    log('C4 fire scope: active (owned identical fire lease omits diagnostic templates; acquisition/restore/actions stay original)')
-    return true
-end
-function C4FireScope.restore()
-    for target,record in pairs(C4FireScope.records)do
-        local _,value=debug.getupvalue(record.sync,record.slot)
-        if value==record.replacement then debug.setupvalue(record.sync,record.slot,record.original)end
-        C4FireScope.records[target]=nil
-    end
-    C4FireScope.active=0;C4FireScope.attempts=0
-end
--- END C4 FIRE SCOPE
-
--- BEGIN C4 IDLE BATCH
--- C4 AutoReload suspend/recovery contracts, under the MIT notice above.
--- No native data caching and no skipped C4 callbacks: cancel/reset always runs.
-local C4Idle={records={},active=0}
-M.c4_idle_batch=C4Idle
-function C4Idle.make(original)
-    local captures={}
-    for i=1,16 do
-        local name,value=debug.getupvalue(original,i);if not name then break end
-        captures[name]={value=value,index=i}
-    end
-    local backend=assert(captures.backend,'idle_backend_capture').value
-    local recovery=assert(captures.recovery,'idle_recovery_capture').value
-    local self=assert(captures.self,'idle_self_capture').value
-    assert(type(backend)=='table' and type(recovery)=='table' and type(self)=='table','idle_capture_type')
-    local snapshots,snapshot_slot
-    for i=1,16 do
-        local name,value=debug.getupvalue(backend.snapshot,i);if not name then break end
-        if name=='snapshots' then snapshots=value;snapshot_slot=i;break end
-    end
-    local function supported(fn,modern_length,modern_hash,game_length,game_hash)
-        if type(fn)~='function' or function_chunk(fn):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
-        local length,hash=C4Batch.signature(fn)
-        return length==modern_length and hash==modern_hash or length==game_length and hash==game_hash
-    end
-    assert(supported(recovery.observe,1061,1859309885,1038,3104295201),'idle_recovery_unsupported')
-    assert(supported(backend.snapshot,37,1207567830,37,1188365773),'idle_backend_unsupported')
-    assert(type(snapshots)=='table' and supported(snapshots.snapshot,261,1286216546,261,1151474522),'idle_phase_unsupported')
-    local observed_recovery,observer_slot
-    for i=1,16 do
-        local name,value=debug.getupvalue(recovery.observe,i);if not name then break end
-        if name=='self' then observed_recovery=value;observer_slot=i;break end
-    end
-    assert(observed_recovery==recovery,'idle_recovery_state_changed')
-    local known={backend=backend,recovery=recovery,self=self,observe=recovery.observe,
-        snapshot=backend.snapshot,phases=snapshots,phase_snapshot=snapshots.snapshot}
-    local function replacement(now)
-        if not cfg.enabled or not cfg.c4_idle_batch or
-           is_excluded('mods/etxp/c4_boundary_probe',excludes) or
-           backend~=known.backend or recovery~=known.recovery or self~=known.self or
-           backend.snapshot~=known.snapshot or recovery.observe~=known.observe or
-           snapshots~=known.phases or snapshots.snapshot~=known.phase_snapshot or
-           observed_recovery~=recovery or recovery.pending~=nil then
-            return original(now)
-        end
-        -- observe() returns immediately without pending recovery. Only the
-        -- read-only snapshot was redundant; preserve the original cancellation.
-        self.cancel('controls_suspended',true)
-    end
-    for i=1,32 do
-        local name=debug.getupvalue(replacement,i);if not name then break end
-        if name=='backend' or name=='recovery' or name=='self' then
-            debug.upvaluejoin(replacement,i,original,captures[name].index)
-        elseif name=='snapshots' then
-            debug.upvaluejoin(replacement,i,known.snapshot,snapshot_slot)
-        elseif name=='observed_recovery' then
-            debug.upvaluejoin(replacement,i,known.observe,observer_slot)
-        end
-    end
-    return replacement
-end
-function C4Idle.attach(target)
-    if not cfg.enabled or not cfg.c4_idle_batch or type(target)~='table' or getmetatable(target) or
-       type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
-    local original=rawget(target,'suspend')
-    if type(original)~='function' or function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
-    local length,hash=C4Batch.signature(original)
-    if not (length==150 and (hash==417995611 or hash==266935112)) then return false end
-    local ok,replacement=pcall(C4Idle.make,original)
-    if not ok then log('C4 idle batch: unsupported collaborators; unchanged');return false end
-    C4Idle.records[target]={original=original,replacement=replacement}
-    rawset(target,'suspend',replacement);C4Idle.active=1
-    log('C4 idle batch: active (empty recovery skips read-only snapshot; cancel and pending recovery preserved)')
-    return true
-end
-function C4Idle.restore()
-    for target,record in pairs(C4Idle.records)do
-        if rawget(target,'suspend')==record.replacement then rawset(target,'suspend',record.original)end
-        C4Idle.records[target]=nil
-    end
-    C4Idle.active=0
-end
--- END C4 IDLE BATCH
-
--- BEGIN C4 NATIVE BATCH
--- Original C4 verification contract, under the MIT notice above.
--- Fresh code bytes on EVERY invocation; no cross-call byte cache or native writes.
-local NativeGuards=(function()
--- Prototype: batch fresh native-code guard reads within one verification.
-local M={}
-function M.make(guards,read)
-    local refs,addresses,sizes,plan={},{},{},{}
-    local function rebuild()
-        local sorted={}
-        refs,addresses,sizes,plan={},{},{},{}
-        for i,g in ipairs(guards)do
-            refs[i]=g;addresses[i]=g.at;sizes[i]=#g.bytes
-            sorted[i]={at=g.at,last=g.at+#g.bytes,index=i}
-        end
-        table.sort(sorted,function(a,b)return a.at<b.at end)
-        local groups={}
-        for _,g in ipairs(sorted)do
-            local last=groups[#groups]
-            local finish=math.max(last and last.last or g.last,g.last)
-            if last and finish-last.at<=4096 and
-               math.floor(last.at/4096)==math.floor((finish-1)/4096)then
-                last.last=finish;last.bytes=last.bytes+g.last-g.at
-            else
-                last={at=g.at,last=g.last,bytes=g.last-g.at};groups[#groups+1]=last
-            end
-            plan[g.index]=last
-        end
-        -- Avoid huge copies for isolated small guards on the same page.
-        for i,g in ipairs(guards)do
-            local p=plan[i]
-            if p.last-p.at>math.max(512,p.bytes*16)then
-                plan[i]={at=g.at,last=g.at+#g.bytes}
-            end
-        end
-    end
-    return function()
-        local valid=#refs==#guards
-        if valid then for i,g in ipairs(guards)do
-            if refs[i]~=g or addresses[i]~=g.at or sizes[i]~=#g.bytes then
-                valid=false;break
-            end
-        end end
-        if not valid then rebuild()end
-        local data={}
-        for i,g in ipairs(guards)do
-            local p=plan[i];local n=p.last-p.at;local value
-            if p.at==g.at and n==#g.bytes then
-                -- Original-field failures keep the original error and order.
-                value=read(g.at,n)
-            else
-                local b=data[p]
-                if b==nil then
-                    local ok,result=pcall(read,p.at,n)
-                    b=ok and type(result)=='string' and #result==n and result or false
-                    data[p]=b
-                end
-                if b then value=b:sub(g.at-p.at+1,g.at-p.at+#g.bytes)
-                else value=read(g.at,#g.bytes)end
-            end
-            assert(value==g.bytes,'compat_live_code_changed:'..g.label)
-        end
-    end
-end
-return M
-
-end)()
-local C4Native={records={},active=0,guard_batch=NativeGuards}
-M.c4_native_batch=C4Native
-function C4Native.make_short_reader(original)
-    local api_index,game_index,api,game
-    for i=1,16 do
-        local name,value=debug.getupvalue(original,i)
-        if not name then break end
-        if name=='api' then api_index,api=i,value
-        elseif name=='game' then game_index,game=i,value end
-    end
-    assert(api_index and game_index and type(api)=='table' and type(game)=='number',
-        'native_read_cells_missing')
-    local function short(rva,n)
-        -- Large guards keep the original multi-chunk reader and its failures.
-        if n>4096 then return original(rva,n)end
-        assert(rva>=0 and n>0 and rva+n<=0x10000000,'compat_read_bounds')
-        local bytes=api.read(game+rva,n)
-        if not bytes then
-            assert(bytes,'compat_read_unavailable:'..string.format('%x',rva))
-        end
-        assert(#bytes==n,'compat_short_read')
-        -- Preserve concat's rejection of a later reader returning a table.
-        if type(bytes)~='string' then return table.concat({bytes})end
-        return bytes
-    end
-    for i=1,16 do
-        local name=debug.getupvalue(short,i)
-        if not name then break end
-        if name=='api' then debug.upvaluejoin(short,i,original,api_index)
-        elseif name=='game' then debug.upvaluejoin(short,i,original,game_index)end
-    end
-    return short
-end
-function C4Native.make(original,guard_index,read_index,guards,read)
-    local observed=read
-    local short=C4Native.make_short_reader(read)
-    local function bridge(at,n)
-        if read==observed then return short(at,n)end
-        -- A replacement of the original reader cell must remain authoritative.
-        return read(at,n)
-    end
-    local joined=false
-    for i=1,16 do
-        local name=debug.getupvalue(bridge,i)
-        if not name then break end
-        if name=='read' then debug.upvaluejoin(bridge,i,original,read_index);joined=true;break end
-    end
-    assert(joined,'native_read_bridge_cell_missing')
-    local previous=guards
-    local batch=NativeGuards.make(guards,bridge)
-    local function replacement()
-        if guards~=previous then
-            batch=NativeGuards.make(guards,bridge);previous=guards
-        end
-        return batch()
-    end
-    for i=1,16 do
-        local name=debug.getupvalue(replacement,i)
-        if not name then break end
-        if name=='guards' then debug.upvaluejoin(replacement,i,original,guard_index);return replacement end
-    end
-    error('native_guard_upvalue_missing')
-end
-function C4Native.attach(target)
-    if not cfg.enabled or not cfg.c4_native_batch or type(target)~='table' or getmetatable(target) or
-       type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes) then return false end
-    local original=rawget(target,'verify')
-    if type(original)~='function' or type(rawget(target,'symbols'))~='table' or
-       type(rawget(target,'fields'))~='table' or
-       function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' then return false end
-    local length,hash=C4Batch.signature(original)
-    if length~=166 or (hash~=637608044 and hash~=369369163)then return false end
-    local guard_index,read_index,guards,read
-    for i=1,16 do
-        local name,value=debug.getupvalue(original,i);if not name then break end
-        if name=='guards' then guard_index,guards=i,value
-        elseif name=='read' then read_index,read=i,value end
-    end
-    if type(guards)~='table' or getmetatable(guards) or type(read)~='function' then return false end
-    local n,h=C4Batch.signature(read)
-    if n~=374 or (h~=3102229121 and h~=2000372290)then return false end
-    local ok,replacement=pcall(C4Native.make,original,guard_index,read_index,guards,read)
-    if not ok then return false end
-    C4Native.records[target]={original=original,replacement=replacement}
-    rawset(target,'verify',replacement);C4Native.active=C4Native.active+1
-    log('C4 native batch: active (verified original code guards; fresh checks and short-read allocation reduction)')
-    return true
-end
-function C4Native.restore()
-    for target,record in pairs(C4Native.records)do
-        if rawget(target,'verify')==record.replacement then rawset(target,'verify',record.original)end
-        C4Native.records[target]=nil
-    end
-    C4Native.active=0
-end
--- END C4 NATIVE BATCH
-
--- BEGIN C4 INPUT SCOPE
--- Bound code verification to native calls actually made by owned input
--- maintenance. Dynamic snapshots/masks/policies remain fresh every invocation.
--- Native acquisition, restoration and actions always retain full verification.
-local C4InputScope={records={},active=0,attempts=0}
-M.c4_input_scope=C4InputScope
-local function input_up(fn,wanted)
-    for i=1,64 do local name,value=debug.getupvalue(fn,i);if not name then break end
-        if name==wanted then return value,i end
-    end
-end
-local function input_signature(fn,length,modern,game)
-    if type(fn)~='function' or function_chunk(fn):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe'then return false end
-    local n,h=C4Batch.signature(fn);return n==length and (h==modern or h==game)
-end
-function C4InputScope.mapping_check(resolved)
-    local record=C4Native.records[resolved];assert(record,'input_scope_native_adapter_missing')
-    local original=record.original
-    local guards,guard_slot=input_up(original,'guards')
-    local reader,read_slot=input_up(original,'read')
-    assert(type(guards)=='table' and type(reader)=='function','input_scope_guards_missing')
-    local initial_guards,initial_read=guards,reader
-    local short=C4Native.make_short_reader(reader)
-    local selected,check={},nil
-    local function scoped()
-        if guards~=initial_guards or reader~=initial_read then return record.replacement()end
-        local indices,mappings,index_switches,mapping_switches=0,0,0,0
-        local count=0;local changed=not check
-        for _,g in ipairs(guards)do
-            local label=g.label
-            if type(label)=='string' and (label=='fn_input_index' or label=='fn_input_mapping' or
-                label=='fn_input_index:switch_table' or label=='fn_input_mapping:switch_table')then
-                count=count+1
-                if selected[count]~=g then changed=true end
-                selected[count]=g
-                if label=='fn_input_index' and #g.bytes==40 then indices=indices+1
-                elseif label=='fn_input_mapping' and #g.bytes==974 then mappings=mappings+1
-                elseif label=='fn_input_index:switch_table' and #g.bytes==52 then index_switches=index_switches+1
-                elseif label=='fn_input_mapping:switch_table' and #g.bytes==40 then mapping_switches=mapping_switches+1
-                else return record.replacement()end
-            elseif type(label)=='string' and (label:match('^fn_input_index:') or
-                label:match('^fn_input_mapping:'))then return record.replacement()
-            end
-        end
-        if count~=5 or indices~=1 or mappings~=1 or index_switches~=1 or mapping_switches~=2 then
-            return record.replacement()
-        end
-        if #selected~=count then changed=true end
-        for i=#selected,count+1,-1 do selected[i]=nil end
-        if changed then check=NativeGuards.make(selected,short)end
-        -- Only membership/plans persist. Native code bytes are read fresh.
-        return check()
-    end
-    for i=1,32 do local name=debug.getupvalue(scoped,i);if not name then break end
-        if name=='guards' then debug.upvaluejoin(scoped,i,original,guard_slot)
-        elseif name=='reader' then debug.upvaluejoin(scoped,i,original,read_slot)end
-    end
-    return scoped
-end
-function C4InputScope.make(target,original)
-    assert(input_signature(original,198,3142655543,2800164366),'input_scope_sync_unknown')
-    local known_step=input_up(original,'step')
-    local length,hash=C4Batch.signature(known_step)
-    assert((length==1453 and hash==4103536327) or (length==1436 and hash==2289891480),'input_scope_step_unknown')
-    local self=input_up(original,'self');assert(self==target,'input_scope_state_unknown')
-    local known_stop=rawget(target,'stop')
-    assert(input_signature(known_stop,539,2772262522,1881759314),'input_scope_stop_unknown')
-    local known_read=input_up(known_step,'read')
-    assert(input_signature(known_read,67,3076458533,3025799190),'input_scope_read_unknown')
-    local state=input_up(known_read,'AimInputState')
-    assert(type(state)=='table' and not getmetatable(state),'input_scope_reader_unknown')
-    local known_policy=rawget(state,'policy')
-    assert(input_signature(known_policy,615,1364621487,3459610720),'input_scope_policy_unknown')
-    local state_record=C4Batch.records[state]
-    local current_read=rawget(state,'read')
-    local state_read=state_record and current_read==state_record.replacement and state_record.original or current_read
-    local n,h=C4Batch.signature(state_read)
-    assert((n==2920 and h==3910151087) or (n==2847 and h==3465483342),'input_scope_state_read_unknown')
-    local known_backend=input_up(known_step,'backend')
-    local known_verify=rawget(known_backend,'verify')
-    assert(input_signature(known_verify,39,1181484356,1161102651),'input_scope_verify_unknown')
-    local resolved=input_up(known_verify,'resolved')
-    assert(resolved==rawget(known_backend,'compatibility'),'input_scope_compatibility_unknown')
-    if not C4Native.records[resolved]then assert(C4Native.attach(resolved),'input_scope_native_unknown')end
-    local native_record=C4Native.records[resolved]
-    local mapping_verify=C4InputScope.mapping_check(resolved)
-    local known_native=input_up(known_step,'native')
-    local mapping=rawget(known_native,'input_mapping')
-    assert(input_signature(mapping,109,1350766942,1113002286),'input_scope_mapping_unknown')
-    local mapping_call=input_up(mapping,'input_mapping')
-    local known_spec=input_up(known_step,'spec')
-    assert(input_up(known_read,'native')==known_native and input_up(known_read,'spec')==known_spec and
-        input_up(known_step,'AimInputState')==state,'input_scope_reader_cells_unknown')
-    local backend,spec,profile,publish,read,AimInputState,base,native,D
-    local function step(enabled,now)
-        if not enabled then
-            local ok,why=self.stop();assert(ok,why);publish('inactive');return
-        end
-        local row,_,cap=backend.snapshot()
-        if not cap or cap.interrupt then
-            local ok,why=self.stop();assert(ok,why);publish('outside_c4');return
-        end
-        local codes=spec.fire or profile(now)
-        if not codes then
-            local ok,why=self.stop();assert(ok,why);publish('unavailable','mbm_assignments_missing');return
-        end
-        if self.lease and not self.lease.pending then
-            if not spec.fire then mapping_verify()end
-        else backend.verify()end
-        local p=read(codes)
-        local suppress,reason=true,'mbm_owns_c4_fire'
-        if not spec.fire then suppress,reason=AimInputState.policy(base,p)end
-        if self.lease and (self.lease.owner~=p.owner or self.lease.identity~=cap.identity or
-            not p.mask or p.mask.bytes~=self.lease.expected)then
-            local ok,why=self.stop();assert(ok,why);p=read(codes)
-        end
-        if not suppress then
-            local ok,why=self.stop();assert(ok,why);publish('preserved',reason);return
-        end
-        if self.lease then publish('owned',reason);return end
-        if p.mask and p.mask.mode~=0 then publish('external_inhibition');return end
-        if p.held then publish(spec.fire and 'waiting_for_fire_release' or 'waiting_for_aim_release');return end
-        assert(p.mask or p.count<D.input_inhibit_capacity,'aim_inhibition_full')
-        -- Mismatch/release may have cleared the old lease after scoped checks.
-        -- Full verification is mandatory before any new native inhibition.
-        backend.verify()
-        publish('acquire',reason)
-        assert(cap.same() and p.same(),'aim_acquire_context_changed')
-        self.lease={owner=p.owner,identity=cap.identity,pending=true}
-        native.input_inhibit(p.owner,spec.action)
-        local q=read()
-        assert(q.owner==p.owner and q.mask and q.mask.mode==1 and
-            q.mask.bytes:sub(17,24)==string.rep('\0',8),'aim_acquire_failed')
-        self.lease.expected=q.mask.bytes;self.lease.pending=false;publish('owned',reason)
-    end
-    for i=1,32 do local name=debug.getupvalue(step,i);if not name then break end
-        if name~='mapping_verify' then
-            local _,slot=input_up(known_step,name);assert(slot,'input_scope_cell_missing:'..name)
-            debug.upvaluejoin(step,i,known_step,slot)
-        end
-    end
-    local function replacement(enabled,now)
-        local own=C4Batch.records[state]
-        local method=rawget(state,'read')
-        if not cfg.enabled or not cfg.c4_native_batch or is_excluded('mods/etxp/c4_boundary_probe',excludes) or
-            input_up(original,'step')~=known_step or input_up(known_step,'read')~=known_read or
-            input_up(known_step,'backend')~=known_backend or input_up(known_step,'native')~=known_native or
-            input_up(known_read,'AimInputState')~=state or input_up(known_step,'AimInputState')~=state or
-            input_up(known_read,'native')~=known_native or input_up(known_read,'spec')~=known_spec or
-            input_up(known_step,'spec')~=known_spec or input_up(mapping,'input_mapping')~=mapping_call or
-            self~=target or rawget(target,'stop')~=known_stop or rawget(state,'policy')~=known_policy or
-            not (method==state_read or own and method==own.replacement) or
-            rawget(known_backend,'verify')~=known_verify or rawget(known_backend,'compatibility')~=resolved or
-            input_up(known_verify,'resolved')~=resolved or C4Native.records[resolved]~=native_record or
-            not (rawget(resolved,'verify')==native_record.replacement or rawget(resolved,'verify')==native_record.original) or
-            rawget(known_native,'input_mapping')~=mapping then return original(enabled,now)end
-        local ok,why=pcall(step,enabled,now)
-        if not ok then
-            local restored,ok,reason=pcall(self.stop)
-            publish('unavailable',tostring(why)..((not restored or not ok)and '; restore: '..tostring(reason or ok)or ''))
-        end
-    end
-    for i=1,32 do local name=debug.getupvalue(replacement,i);if not name then break end
-        if name=='self' or name=='publish'then
-            local _,slot=input_up(original,name);assert(slot,'input_scope_sync_cell_missing:'..name)
-            debug.upvaluejoin(replacement,i,original,slot)
-        end
-    end
-    return replacement
-end
-function C4InputScope.attach(target)
-    if not cfg.enabled or not cfg.c4_native_batch or type(target)~='table' or getmetatable(target)or
-        type(debug.upvaluejoin)~='function' or is_excluded('mods/etxp/c4_boundary_probe',excludes)then return false end
-    local owned=C4InputScope.records[target]
-    if owned and rawget(target,'sync')==owned.replacement then return true end
-    local original=rawget(target,'sync')
-    if not input_signature(original,198,3142655543,2800164366)then return false end
-    local ok,replacement=pcall(C4InputScope.make,target,original)
-    if not ok then log('C4 input scope: unknown dependency; unchanged: '..tostring(replacement));return false end
-    C4InputScope.records[target]={original=original,replacement=replacement}
-    rawset(target,'sync',replacement);C4InputScope.active=C4InputScope.active+1
-    log('C4 input scope: active (fresh owned-input guards; native acquisition/restore/actions keep full verification)')
-    return true
-end
-function C4InputScope.restore()
-    for target,record in pairs(C4InputScope.records)do
-        if rawget(target,'sync')==record.replacement then rawset(target,'sync',record.original)end
-        C4InputScope.records[target]=nil
-    end
-    C4InputScope.active=0;C4InputScope.attempts=0
-end
--- END C4 INPUT SCOPE
-
--- BEGIN C4 READ POOL
--- Optional Smooth-owned runtime adapter for the measured C4 1.11 reader.
--- No global FFI proxy, memory cache, native write, guard bypass, or tick skip.
--- The exact original bytecode must match; unfamiliar versions stay untouched.
-local C4Pool={records={},attempts=0,active=0}
-M.c4_read_pool=C4Pool
-local function c4_reader_signature(fn)
-    local ok,blob=pcall(string.dump,fn,true)
-    if not ok or #blob~=420 then return false end
-    local a,b=1,0
-    for i=1,#blob do a=(a+blob:byte(i))%65521;b=(b+a)%65521 end
-    local checksum=b*65536+a
-    -- Same original 1.11 source compiled by LuaJIT 2.1 alpha (game DLL)
-    -- or the newer LuaJIT used by the offline regression runner.
-    return checksum==1514359016 or checksum==2664974623
-end
-function C4Pool.make_reader(ffi,rpm,process)
-    -- ReadProcessMemory cannot call back into Lua. Each VM is synchronous;
-    -- these two private buffers are therefore reused only after a call returns.
-    local out,count=ffi.new('uint8_t[4096]'),ffi.new('size_t[1]')
-    local cast,string_,number=ffi.cast,ffi.string,tonumber
-    local calls=0
-    local function pooled(address,size)
-        assert(type(address)=='number' and address>=65536 and address+size<0x800000000000,'bad_read_address')
-        assert(size>0 and size<=4096,'read_size_limit')
-        count[0]=0
-        calls=calls+1
-        if rpm(process,cast('const void *',address),out,size,count)==0 or
-           number(count[0])~=size then return nil end
-        return string_(out,size)
-    end
-    return pooled,function()return calls end
-end
--- Opt-in diagnosis only: never replay a read, retain bytes or addresses,
--- or change its result. A prime sampling interval reduces periodic aliasing.
-function C4Pool.make_probe(reader)
-    local state={calls=0,samples=0,errors=0,sites={}}
-    local function capture(size)
-        local parts={}
-        for level=2,10 do
-            local info=debug.getinfo(level,'nSl')
-            if not info then break end
-            local source=(info.source or ''):match('mods/[%w_./%-]+') or ''
-            if source:gsub('%.lua$','')=='mods/etxp/c4_boundary_probe' then
-                parts[#parts+1]=(info.name or '?')..':'..tostring(info.currentline)
-            end
-        end
-        local c4=rawget(_G,'HD2C4BoundaryProbe')
-        local phase=type(c4)=='table' and rawget(c4,'phase') or 'unknown'
-        local site=tostring(phase)..' size='..tostring(size)..' '..table.concat(parts,'>')
-        state.sites[site]=(state.sites[site] or 0)+1
-        state.samples=state.samples+1
-    end
-    local function probe(address,size)
-        state.calls=state.calls+1
-        if state.calls%509==0 then
-            if not pcall(capture,size) then state.errors=state.errors+1 end
-        end
-        return reader(address,size)
-    end
-    return probe,state
-end
-function C4Pool.report_probe()
-    for _,record in pairs(C4Pool.records) do
-        local state=record.profile
-        if state then
-            local sites={}
-            for site,count in pairs(state.sites)do sites[#sites+1]={site=site,count=count}end
-            table.sort(sites,function(a,b)return a.count>b.count end)
-            local top={}
-            for i=1,math.min(6,#sites)do top[#top+1]=sites[i].count..'x '..sites[i].site end
-            log('[C4-read-probe] reads='..state.calls..' samples='..state.samples..
-                ' errors='..state.errors..' top='..table.concat(top,'; '))
-            state.calls=0;state.samples=0;state.errors=0;state.sites={}
-        end
-    end
-end
-function C4Pool.attach(api)
-    if type(api)~='table' or getmetatable(api)~=nil then return false end
-    local existing=C4Pool.records[api]
-    if existing and rawget(api,'read')==existing.pooled then return true end
-    if not cfg.enabled or (not cfg.c4_read_pool and not cfg.c4_read_profile) then return false end
-    local original=rawget(api,'read')
-    if type(original)~='function' or
-       function_chunk(original):gsub('%.lua$','')~='mods/etxp/c4_boundary_probe' or
-       is_excluded('mods/etxp/c4_boundary_probe',excludes) or
-       not c4_reader_signature(original) then return false end
-    local captured={}
-    for i=1,8 do
-        local name,value=debug.getupvalue(original,i)
-        if not name then break end
-        captured[name]=value
-    end
-    local ffi,k,process=captured.ffi,captured.k,captured.process
-    if ffi~=require('ffi') or ffi.os~='Windows' or not ffi.abi('64bit') or
-       k==nil or type(process)~='cdata' then return false end
-    local rpm=k.ReadProcessMemory
-    if type(rpm)~='cdata' then return false end
-    local pooled,calls=original,function()return 0 end
-    if cfg.c4_read_pool then pooled,calls=C4Pool.make_reader(ffi,rpm,process)end
-    local profile
-    if cfg.c4_read_profile then pooled,profile=C4Pool.make_probe(pooled)end
-    local record={original=original,pooled=pooled,calls=calls,profile=profile,
-        profiling=not not cfg.c4_read_profile,pooling=not not cfg.c4_read_pool}
-    C4Pool.records[api]=record
-    C4Pool.last_original=original
-    rawset(api,'read',pooled)
-    C4Pool.active=0
-    for _ in pairs(C4Pool.records) do C4Pool.active=C4Pool.active+1 end
-    log('C4 read pool: active (verified 1.11 reader; live reads and frame callbacks preserved)')
-    if profile then log('[C4-read-probe] enabled; sample interval=509; pooled='..tostring(cfg.c4_read_pool))end
-    return true
-end
-function C4Pool.restore()
-    for api,record in pairs(C4Pool.records) do
-        -- Never overwrite a replacement installed later by C4 or another mod.
-        if rawget(api,'read')==record.pooled then rawset(api,'read',record.original) end
-        C4Pool.records[api]=nil
-    end
-    C4Pool.active=0
-end
-function C4Pool.reads()
-    local total=0
-    for api,record in pairs(C4Pool.records) do
-        if rawget(api,'read')==record.pooled then total=total+record.calls() end
-    end
-    return total
-end
-function C4Pool.discover(roots)
-    local pool_wanted=cfg.enabled and (cfg.c4_read_pool or cfg.c4_read_profile) and
-        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
-    local batch_wanted=cfg.enabled and cfg.c4_input_batch and
-        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
-    local context_wanted=C4Context and cfg.enabled and cfg.c4_context_batch and
-        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
-    if C4FireScope then
-        if not context_wanted and (C4FireScope.active>0 or C4FireScope.attempts>0)then C4FireScope.restore()end
-        C4FireScope.active=0
-        for target,record in pairs(C4FireScope.records)do
-            local _,value=debug.getupvalue(record.sync,record.slot)
-            if rawget(target,'sync')==record.sync and value==record.replacement then
-                C4FireScope.active=C4FireScope.active+1
-            else C4FireScope.records[target]=nil;C4FireScope.attempts=0 end
-        end
-    end
-    local fire_pending=C4FireScope and context_wanted and C4FireScope.active==0 and C4FireScope.attempts<8
-    if C4UI then
-        if not context_wanted and (C4UI.active>0 or C4UI.attempts>0)then C4UI.restore()end
-        C4UI.active=0
-        for target,record in pairs(C4UI.records)do
-            local _,value=debug.getupvalue(target,record.slot)
-            if value==record.replacement then C4UI.active=C4UI.active+1
-            else C4UI.records[target]=nil;C4UI.attempts=0 end
-        end
-    end
-    local ui_pending=C4UI and context_wanted and C4UI.active==0 and C4UI.attempts<8
-    local native_wanted=C4Native and cfg.enabled and cfg.c4_native_batch and
-        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
-    if C4InputScope then
-        if not native_wanted and (C4InputScope.active>0 or C4InputScope.attempts>0)then
-            C4InputScope.restore();log('C4 input scope: disabled; original sync restored')
-        end
-        C4InputScope.active=0
-        for target,record in pairs(C4InputScope.records)do
-            if rawget(target,'sync')==record.replacement then C4InputScope.active=C4InputScope.active+1
-            else C4InputScope.records[target]=nil;C4InputScope.attempts=0 end
-        end
-    end
-    local scope_pending=C4InputScope and native_wanted and C4InputScope.active<2 and C4InputScope.attempts<8
-    local idle_wanted=C4Idle and cfg.enabled and cfg.c4_idle_batch and
-        not is_excluded('mods/etxp/c4_boundary_probe',excludes)
-    if C4Idle then
-        if C4Idle.active>0 and not idle_wanted then
-            C4Idle.restore();log('C4 idle batch: disabled; original suspend restored')
-        end
-        C4Idle.active=0
-        for target,record in pairs(C4Idle.records)do
-            if rawget(target,'suspend')==record.replacement then C4Idle.active=C4Idle.active+1
-            else C4Idle.records[target]=nil;C4Pool.attempts=0 end
-        end
-    end
-    if C4Native then
-        if C4Native.active>0 and not native_wanted then
-            C4Native.restore();log('C4 native batch: disabled; original verifier restored')
-        end
-        C4Native.active=0
-        for target,record in pairs(C4Native.records)do
-            if rawget(target,'verify')==record.replacement then C4Native.active=C4Native.active+1
-            else C4Native.records[target]=nil;C4Pool.attempts=0 end
-        end
-    end
-    if C4Context and C4Context.active>0 and not context_wanted then
-        C4Context.restore();log('C4 context batch: disabled; original snapshot restored')
-    end
-    if C4Context then
-        C4Context.active=0
-        for target,record in pairs(C4Context.records)do
-            if rawget(target,'snapshot')==record.replacement then C4Context.active=C4Context.active+1
-            else C4Context.records[target]=nil;C4Pool.attempts=0 end
-        end
-    end
-    if C4Batch and C4Batch.active>0 and not batch_wanted then
-        C4Batch.restore();log('C4 input batch: disabled; original input reader restored')
-    end
-    if not cfg.enabled or (not cfg.c4_read_pool and not cfg.c4_read_profile) or
-       is_excluded('mods/etxp/c4_boundary_probe',excludes) then
-        if C4Pool.active>0 then C4Pool.restore();log('C4 read pool: disabled; original reader restored') end
-        C4Pool.attempts=0
-        if not batch_wanted and not context_wanted and not native_wanted and not idle_wanted then return end
-    end
-    for _,record in pairs(C4Pool.records)do
-        if record.profiling~=(not not cfg.c4_read_profile) or
-           record.pooling~=(not not cfg.c4_read_pool) then
-            C4Pool.restore();C4Pool.attempts=0;break
-        end
-    end
-    C4Pool.active=0
-    for api,record in pairs(C4Pool.records) do
-        if rawget(api,'read')==record.pooled then C4Pool.active=C4Pool.active+1
-        else C4Pool.records[api]=nil end
-    end
-    local core_complete=((not pool_wanted or C4Pool.active>0) and
-        (not batch_wanted or C4Batch and C4Batch.active>0) and
-        (not context_wanted or C4Context.active>0) and
-        (not native_wanted or C4Native.active>0) and
-        (not idle_wanted or C4Idle.active>0))
-    if (core_complete or C4Pool.attempts>=8) and not ui_pending and not scope_pending and not fire_pending then return end
-    local core_last=C4Pool.attempts==7
-    C4Pool.attempts=math.min(8,C4Pool.attempts+1)
-    if ui_pending then C4UI.attempts=C4UI.attempts+1 end
-    if scope_pending then C4InputScope.attempts=C4InputScope.attempts+1 end
-    if fire_pending then C4FireScope.attempts=C4FireScope.attempts+1 end
-    local pending,seen={},{}
-    local function push(value)
-        local kind=type(value)
-        if (kind=='function' or kind=='table') and not seen[value] and
-           value~=_G and value~=package and value~=M and
-           value~=rawget(_G,'stingray') and #pending<2048 then
-            seen[value]=true;pending[#pending+1]=value
-        end
-    end
-    for _,root in ipairs(roots) do push(root) end
-    local at=1
-    while at<=#pending do
-        local value=pending[at];at=at+1
-        if type(value)=='function' then
-            local own_chunk=function_chunk(value)
-            local is_c4=own_chunk:gsub('%.lua$','')=='mods/etxp/c4_boundary_probe'
-            for i=1,64 do
-                local name,next_=debug.getupvalue(value,i)
-                if not name then break end
-                if is_c4 then
-                    if fire_pending then C4FireScope.attach(next_)end
-                    if scope_pending then C4InputScope.attach(next_)end
-                    if ui_pending and name=='native_ui' then C4UI.attach(next_)end
-                    if idle_wanted and name=='auto_reload' then C4Idle.attach(next_)end
-                    if native_wanted then C4Native.attach(next_)end
-                    if name=='AimInputState' and C4Batch and batch_wanted then C4Batch.attach(next_)end
-                    if (name=='ContextReader' or name=='reader') and context_wanted then C4Context.attach(next_)end
-                    if name=='api' and C4Pool.attach(next_) and
-                       (not batch_wanted or C4Batch and C4Batch.active>0) and
-                       (not context_wanted or C4Context.active>0) and
-                       (not native_wanted or C4Native.active>0) and
-                       (not idle_wanted or C4Idle.active>0) and
-                       (not ui_pending or C4UI.active>0) and
-                       (not scope_pending or C4InputScope.active>=2) and
-                       (not fire_pending or C4FireScope.active>0) then return end
-                    if name~='engine' and name~='sr' and name~='G' and name~='ffi' then push(next_) end
-                elseif type(next_)=='function' and
-                       (function_chunk(next_)~=own_chunk or name=='target' or name=='previous' or
-                        name=='previous_update' or name=='original_update' or name=='next_update' or
-                        name=='base_prev') then
-                    push(next_)
-                end
-            end
-        elseif getmetatable(value)==nil then
-            if fire_pending then C4FireScope.attach(value)end
-            if scope_pending then C4InputScope.attach(value)end
-            if native_wanted then C4Native.attach(value)end
-            if idle_wanted then C4Idle.attach(value)end
-            if context_wanted then C4Context.attach(value)end
-            if C4Pool.attach(value) and (not batch_wanted or C4Batch and C4Batch.active>0) and
-                       (not context_wanted or C4Context.active>0) and
-                       (not native_wanted or C4Native.active>0) and
-                       (not idle_wanted or C4Idle.active>0) and
-                       (not ui_pending or C4UI.active>0) and
-                       (not scope_pending or C4InputScope.active>=2) and
-                       (not fire_pending or C4FireScope.active>0) then return end
-            local count=0
-            for _,next_ in next,value do
-                count=count+1;if count>64 then break end
-                push(next_)
-            end
-        end
-    end
-    if scope_pending and C4InputScope.attempts==8 and C4InputScope.active<2 then
-        log('C4 input scope: supported input gates not found; remaining syncs unchanged')
-    end
-    if fire_pending and C4FireScope.attempts==8 and C4FireScope.active==0 then
-        log('C4 fire scope: supported original fire gate not found; unchanged')
-    end
-    if core_last then
-        if idle_wanted and C4Idle.active==0 then log('C4 idle batch: no supported original suspend found; unchanged')end
-        if native_wanted and C4Native.active==0 then log('C4 native batch: no supported original verifier found; unchanged')end
-        if pool_wanted and C4Pool.active==0 then log('C4 read pool: no supported reader found; no changes made')end
-        if context_wanted and C4Context.active==0 then
-            log('C4 context batch: no supported original snapshot found; unchanged')
-        end
-    end
-    if ui_pending and C4UI.attempts==8 and C4UI.active==0 then
-        log('C4 UI scope: no supported flags-only consumer found; unchanged')
-    end
-end
--- END C4 READ POOL
-
--- BEGIN C4 CPU PROFILE
--- Explicit diagnosis only. CPU stacks are sampled across this Lua VM, not just
--- ReadProcessMemory calls. No game inputs, native writes, or foreign config edits.
-local C4CPU={running=false,completed=false,samples=0,errors=0,unique=0}
-M.c4_cpu_profile=C4CPU
-function C4CPU.stop(reason)
-    if not C4CPU.running then return end
-    C4CPU.running=false
-    local ok,err=pcall(C4CPU.backend.stop)
-    if not ok then log('[C4-CPU] stop failed: '..tostring(err))end
-    local states={}
-    for kind,count in pairs(C4CPU.states)do states[#states+1]=kind..'='..count end
-    table.sort(states)
-    log('[C4-CPU] stopped reason='..tostring(reason)..' samples='..C4CPU.samples..
-        ' errors='..C4CPU.errors..' overflow='..C4CPU.overflow..' states='..table.concat(states,','))
-    local rows={}
-    for stack,count in pairs(C4CPU.stacks)do rows[#rows+1]={stack=stack,count=count}end
-    table.sort(rows,function(a,b)return a.count>b.count end)
-    for i=1,math.min(20,#rows)do
-        log('[C4-CPU] '..rows[i].count..'x '..rows[i].stack)
-    end
-end
-function C4CPU.poll(now)
-    local wanted=cfg.enabled and cfg.c4_cpu_profile
-    if not wanted then
-        C4CPU.stop('config_disabled');C4CPU.completed=false;return
-    end
-    if C4CPU.running then
-        if now>=C4CPU.deadline then C4CPU.stop('45s_deadline')end
-        return
-    end
-    if C4CPU.completed then return end
-    C4CPU.completed=true
-    local ok,profile=pcall(require,'jit.profile')
-    if not ok or type(profile)~='table' or type(profile.start)~='function' or
-       type(profile.stop)~='function' or type(profile.dumpstack)~='function' then
-        log('[C4-CPU] unavailable; no sampler started');return
-    end
-    C4CPU.backend=profile;C4CPU.samples=0;C4CPU.errors=0;C4CPU.unique=0
-    C4CPU.stacks={};C4CPU.states={};C4CPU.overflow=0;C4CPU.deadline=now+45
-    local function sample(thread,n,state)
-        if not C4CPU.running then return end
-        C4CPU.samples=C4CPU.samples+n
-        C4CPU.states[state]=(C4CPU.states[state] or 0)+n
-        local good,stack=pcall(profile.dumpstack,thread,'pl;',12)
-        if not good or type(stack)~='string' then C4CPU.errors=C4CPU.errors+1;return end
-        stack=state..' '..stack:gsub('[\r\n]',' '):sub(1,2400)
-        local count=C4CPU.stacks[stack]
-        if count then C4CPU.stacks[stack]=count+n
-        elseif C4CPU.unique<512 then
-            C4CPU.unique=C4CPU.unique+1;C4CPU.stacks[stack]=n
-        else C4CPU.overflow=C4CPU.overflow+n end
-    end
-    C4CPU.running=true
-    local started,why=pcall(profile.start,'li5',sample)
-    if not started then
-        C4CPU.running=false;pcall(profile.stop)
-        log('[C4-CPU] start failed: '..tostring(why));return
-    end
-    log('[C4-CPU] started interval=5ms duration=45s; diagnostic FPS is not acceptance FPS')
-end
--- END C4 CPU PROFILE
 
 -- ===== writer hold: splice FFI writer mods off the chain ==============
 -- The 0x66d26c crash family: dsh/codex FFI mods write into engine tables
@@ -2928,13 +1113,21 @@ local function provision_tools()
     local readme=[===[SmoothBoot - quick guide / 快速指南
 =====================================================
 
-Candidate 3.0.46: original-chain pass-through now breaks a second re-entry before timing or discovery. Legitimate adopted chains still reach their original downstream once. Success, errors and trailing nil results reset the guard correctly. HD2Runtime 0.28.1's unchanged scheduler has been replayed offline in both load orders; this is not live crash or performance acceptance.
-候选3.0.46：原链直通路径在第二次重入时终止循环，保护发生在计时和识别之前。正常接回的调用链仍可转发至原链；成功、异常及末尾nil返回值均会正确复位保护。已离线回放HD2Runtime 0.28.1原始调度器的两种加载顺序；尚未完成实机崩溃与性能验收。
+Candidate 3.0.50: isolates Windows FFI declarations with private aliases; restores each paused table by identity; preserves underscores in exclusions; reads and bounds reentry_max; safely formats foreign errors. New installs leave shared GC policy unchanged (gc_pause=0); explicit existing settings remain. Offline checks do not establish that reported in-game memory leaks or crashes are fixed. Restart to upgrade; live acceptance remains pending.
+候选3.0.50：Windows FFI声明改用私有别名；按表身份恢复暂停状态；排除列表保留下划线；读取并限制reentry_max；安全处理异常文本。新安装默认不调整共享GC（gc_pause=0），已有显式配置保留。离线检查不足以证明反馈中的实机泄漏或崩溃已修复；升级需重启，实机验收仍待完成。
+
+Candidate 3.0.49: removes C4-specific adapters and their configuration/diagnostics. Legacy keys are ignored. Boot-pause restoration now drops references to restored foreign state. Restart the game when upgrading; live acceptance remains pending.
+候选3.0.49：移除C4专用适配器及其配置与诊断，旧配置项忽略；开局暂停恢复后释放对外部旧状态的引用。升级请重启游戏，实机验收仍待完成。
+Candidate 3.0.48: adds a black-box line to the periodic self-report (`blackbox: head=<chain head> open=<n>[<held writers currently allowed to write>] held_closed=<n>`), built from the existing writer-hold table (`WH.held[name].ctl.open`). After a crash the last such line names the set of writers that could have been writing, which is what the dump alone cannot tell (the dump shows the victim instruction, never the writer). Purely additive: no change to the gate, the chain wrapper, timing or release logic.
+Candidate 3.0.47: the original-chain pass-through now carries a bounded nesting depth instead of a boolean latch. A legal second dispatch in the same engine call (the shape the priority loaders above us use) is forwarded and still returns the chain's values; only past reentry_max (default 3, clamp 1..16) is a cycle broken, counted in M.reentry_cycles and logged with the depth and the cap. Arity, trailing nils and error identity are preserved on every path. This replaces 3.0.46's boolean swallow, which returned nothing to the caller and was followed by in-game menu, mission-entry and quit stalls on 2026-10-06. Offline suites cover the guard, the observed priority load order (smoothboot -> hd2runtime -> hd2_scanner) and the runtime scheduler; live acceptance is still open.
+Candidate 3.0.46 (superseded): original-chain pass-through broke a second re-entry before timing or discovery. Legitimate adopted chains still reach their original downstream once. Success, errors and trailing nil results reset the guard correctly. HD2Runtime 0.28.1's unchanged scheduler has been replayed offline in both load orders; this is not live crash or performance acceptance.
+候选3.0.47：原链直通改为有界嵌套深度，取代布尔锁存。同一次引擎调用内的合法二次派发（我们上方的优先加载模组正是这种形状）会被正常转发并仍能拿到链路返回值；只有超过 reentry_max（默认3，范围1..16）才断环，并计入 M.reentry_cycles、连同深度与上限写入日志。所有路径都保留返回值个数、末尾 nil 与异常对象本身。此项取代 3.0.46 的布尔吞掉——它会把空值返回给调用方，2026-10-06 实机随后出现菜单、入队与退出卡死。离线套件已覆盖守卫、实测优先加载顺序（smoothboot → hd2runtime → hd2_scanner）与 runtime 调度器；实机验收仍未完成。
+候选3.0.46（已被取代）：原链直通路径在第二次重入时终止循环，保护发生在计时和识别之前。正常接回的调用链仍可转发至原链；成功、异常及末尾nil返回值均会正确复位保护。已离线回放HD2Runtime 0.28.1原始调度器的两种加载顺序；尚未完成实机崩溃与性能验收。
 
 Release 3.0.45: writer hold gates now carry the delegated writer's name plus [SB gate] in source-based profilers. This identifies our routing shell, not a changed third-party file. Released writer work and the shell's forwarding overhead are charged to that row; SmoothBoot's governor keeps its own row. Profiler probes, callback results and release timing are preserved. No work is hidden or disabled to lower the displayed cost.
 正式版3.0.45：写入保护门在按源码归属的性能面板中显示被托管模组名称及[SB gate]标记，明确表示这是我们的转发门，并非修改了第三方文件。释放后原模组的执行耗时与门本身的转发开销计入该行；SmoothBoot调度器仍保留独立一行。计时探针、回调返回值和释放时机保留；没有通过隐藏或禁用工作降低显示数值。
-Accepted on 2026-10-04: live startup attribution and companion-tool generation, followed by user-operated mission, death/respawn and return-to-ship checks. This is an attribution maintenance release, not a claim of universal compatibility or a C4/FPS fix.
-2026-10-04验收：实机启动归属与工具生成正常，用户操作的任务、死亡复活、返舰船检查正常。这是计时归属维护版，不承诺所有模组兼容，也不宣称修复C4帧率问题。
+Accepted on 2026-10-04: live startup attribution and companion-tool generation, followed by user-operated mission, death/respawn and return-to-ship checks. This is an attribution maintenance release, not a claim of universal compatibility.
+2026-10-04验收：实机启动归属与工具生成正常，用户操作的任务、死亡复活、返舰船检查正常。这是计时归属维护版，不承诺所有模组兼容。
 Candidate 3.0.44 (bug-fix): the "cannot splice" note now distinguishes the two causes. If the wrapper above keeps no function upvalue as its previous hook, replacing hooks at runtime is why it sits above us and mod order cannot change that; the old wording told users to reorder a list that was already correct.
 候选3.0.44（修复版）：把“无法插入”的提示分成两种真实原因。若上方包装层没有用函数 upvalue 保存上一个钩子，那是它运行期重包导致的，调整顺序也没用；旧文案会误导用户去改一个本来就正确的顺序。
 Candidate 3.0.43 (bug-fix): collector exclude picker ignores "config check" lines; the config-check warning no longer contains the words "chain inventory"; the shipped LTE default explains itself and how to remove it; chain inventory is re-logged when it changes and unmanaged sources are listed separately; "rehooks" is logged once per source with an above-SmoothBoot note; the load-order hint is printed on the first frame.
@@ -2956,8 +1149,8 @@ Callback forwarding still avoids per-frame result tables and preserves trailing 
 HUD Ballistic Trajectory, Enemy HP, DiversBestFriend and Aggro Counter callbacks
 protect their enclosing chain from skipped/paused updates, including update buses.
 弹道HUD、Enemy HP、DiversBestFriend和Aggro Counter所在调用链保留逐帧更新，兼容调度总线。
-This protection is not selective per-mod scheduling. Native C4 adapters remain scoped.
-此保护不是逐模组独立节流；C4原生读取适配仍只针对已核对的实现。
+This protection is not selective per-mod scheduling.
+此保护不是逐模组独立节流。
 Watchdog can attribute work behind Smooth writer gates to Smooth. ms/s is accumulated
 time per second, not one frame's latency. High startup scan cost may be temporary.
 Watchdog可能把Smooth写入门后的工作归入Smooth。ms/s为每秒累计时间，不是单帧延迟。
@@ -2991,29 +1184,7 @@ Game functionality and reported cost regressions still require live acceptance.
   Edit config.txt in this folder; changes hot-apply within 10 seconds.
   / 编辑本文件夹里的 config.txt，10 秒内热生效。
   enabled=yes/no        master switch / 总开关
-  c4_read_pool=yes/no   candidate C4 read-buffer reuse / 测试版C4读取缓冲复用
-    Uses live reads on every call; preserves C4 input, guards and charge tracking.
-    / 每次仍读取最新内存；保留C4输入、校验和炸药跟踪。
-    Set no and restart to compare with the original reader; no third-party files change.
-    / 改为no并重启可对照原版读取；不修改其他作者的安装文件。
-  c4_context_batch=yes/no  candidate context validation batches (default no)
-    / 上下文校验分块测试，默认no。每项仍校验新数据；大读取失败回退。
-    Flags-only C4 UI checks keep fresh identity and map/menu flags, without action data.
-    / C4界面检查仅采集新鲜身份和地图/菜单标志，不采集无关动作数据。
-    Identical owned-fire maintenance omits unused diagnostic templates; acquisition stays complete.
-    / 同一已有射击接管省去未使用的诊断模板扫描；首次接管保留完整读取。
-  c4_native_batch=yes/no   candidate native code verification batches (default no)
-    Owned aim maintenance checks fresh mapping/index code only; owned fire makes no native call.
-    Acquisition, restoration and actions retain full verification; all dynamic inputs stay fresh.
-    / 已接管瞄准只校验当前调用的映射/索引代码；已接管开火无原生调用。
-    / 建立接管、恢复和动作保留完整校验；每次仍读取最新动态输入。
-    / 原生代码校验分块测试，默认no。
-    Native actions, input policy and validation limits are preserved.
-    / 保留原生动作、输入策略及校验限制。切换可热生效，不是稳定版保证。
-  c4_idle_batch=yes/no     candidate idle auto-reload read gate (default no)
-                          空闲自动装填读取门控；有待恢复状态时保留完整处理
-  c4_cpu_profile=yes/no    45-second CPU diagnosis only (default no)
-    / CPU短时诊断，默认关闭，45秒自动停止。诊断期间帧率不作为验收结果。
+  reentry_max=3         nested dispatch cap, integer 1..16 / 嵌套派发上限，整数1..16
   exclude=FRAG,...      never manage these mods / 排除托管
   writers=FRAG,...      writer mods held at boot / 开机扣留的写入器
   writer_release_s=10   seconds before first release / 首个放行延时
@@ -3041,9 +1212,30 @@ Game functionality and reported cost regressions still require live acceptance.
   neither scheduled nor excluded; the log prints those as "NOT managed".
   / 只有 update 链上够得到的模组才能被列出或排除；挂在别处（菜单、原生渲染、
   自己的计时器）的模组既不能被调度也不能被排除，日志会用 "NOT managed" 标出。
-  Load order: SmoothBoot must be the bottom (lowest priority) entry. If another
+  Load order: keep SmoothBoot at the BOTTOM of the list (just below Bingus Shared Loader).
+Measured 2026-10-06: at the bottom it loads early, so later writers keep us as their
+downstream and the writer gate can hold them - the watchdog then shows `mods/<owner>
+[SB gate]` rows (275 rows across five owners, including two mods that are not in writers=)
+and the log shows writer-hold releases. Moved to the TOP it loaded 61st of 61, the watchdog
+showed NO [SB gate] row, and the gate held nothing: every writer had installed first.
+Purge and Deploy after any reorder.
+Superseded (wrong) wording kept below as history: Arsenal's **default priority** reads the list bottom-up - the bottom entry
+loads first (innermost) and the top entry loads last (outermost wrapper). Measured
+2026-10-06: SmoothBoot sat at the bottom (index 75/76, patch slot 336, the highest) and
+was therefore loaded 13th of 62, i.e. *inside* hd2runtime and hd2_scanner. To let
+SmoothBoot wrap the whole chain, put it at the **top** of the list and keep the loader
+itself at the bottom (that is the loader's own rule). If you enabled Arsenal's
+first-mod priority instead, the mapping inverts: then SmoothBoot belongs at the bottom.
+Purge and Deploy after reordering.
+Candidate notes keep the older wording below as history. If another
   mod wraps the chain above it, the first-frame line says so and lists the head.
-  / 加载顺序：SmoothBoot 必须在最底部（优先级最低）。若有模组在它上面包住链，
+  加载顺序：Arsenal 的**默认优先级**是按列表自下而上读取——最底部先加载（最内层），
+（该解读已被实测推翻，见下方更正）。2026-10-06 实测：SmoothBoot 位于最底部（第 75/76 位、
+部署槽位 336 即最高），结果在 62 个模组里第 13 个加载，即被 hd2runtime 与 hd2_scanner
+包在里面。若要让它包住整条链，应把它保持在列表**最底部**（实测：放底部时写入门有效），而加载器本身保持最底部
+（那是加载器自己的规则）。若你启用了 Arsenal 的“首模优先”，映射相反：此时 SmoothBoot
+应放最底部。改完顺序后要 Purge → Deploy。
+/ 旧表述保留在下方作为历史：若有模组在它上面包住链，
   首帧日志会直接写出链头名字并提示调整顺序。
   Self re-heading only works when the newcomer keeps us in a function upvalue.
   A mod that re-wraps update at runtime and stores its previous hook elsewhere
@@ -3091,7 +1283,7 @@ provision_tools()
 -- Diagnostics read published state only: no native action or foreign state
 -- mutation. This also covers third-party mods whose own logging is off.
 local function runtime_snapshot()
-    for _,key in ipairs({'HD2C4BoundaryProbe','ModBindingsMenu','TweaksMod','CorpseCleanup',
+    for _,key in ipairs({'ModBindingsMenu','TweaksMod','CorpseCleanup',
                          'HD2VehicleCooldown','TankCooldown','MDL'}) do
         local state=rawget(_G,key)
         if type(state)=='table' then
@@ -3109,99 +1301,6 @@ local function runtime_snapshot()
         end
     end
 end
-local function c4_snapshot()
-    -- Watchdog can keep the real callback in a table field rather than a
-    -- previous upvalue. Read the bounded closure graph; never replace slots.
-    local queue,seen={},{}
-    local function enqueue(value)
-        local kind=type(value)
-        if (kind=='function' or kind=='table') and not seen[value]
-           and value~=_G and value~=package and value~=rawget(_G,'stingray') then
-            seen[value]=true queue[#queue+1]=value
-        end
-    end
-    enqueue(rawget(_G,'update')) enqueue(head_above) enqueue(WH.entry) enqueue(base_prev)
-    local captured={}
-    local saw_c4=false
-    local detail_seen={}
-    local detail_count=0
-    local function c4_details(root)
-        -- Follow the C4 helper functions immediately. Watchdog metadata can
-        -- otherwise fill the generic queue before tick's state is reached.
-        -- Its spy/timer exposes the wrapped function as the target upvalue.
-        local pending={root}
-        while #pending>0 and detail_count<256 do
-            local fn=table.remove(pending)
-            if not detail_seen[fn] then
-                detail_seen[fn]=true detail_count=detail_count+1
-                local chunk=wh_chunk_of(fn)
-                local c4=chunk:find('mods/etxp/c4_boundary_probe',1,true)~=nil
-                local spy=chunk:find('mods/patpatpatrick/mod_lag_finder',1,true)~=nil
-                if c4 or spy then
-                    for index=1,64 do
-                        local name,next_=debug.getupvalue(fn,index)
-                        if not name then break end
-                        if c4 and (name=='bindings' or name=='gameplay_guard' or name=='gate' or name=='actions')
-                           and type(next_)=='table' then captured[name]=next_ end
-                        if type(next_)=='function' and (c4 or name=='target') then
-                            pending[#pending+1]=next_
-                        end
-                    end
-                end
-            end
-            if captured.bindings and captured.gameplay_guard and captured.gate and captured.actions then break end
-        end
-    end
-    local at=1
-    while at<=#queue and at<=512 do
-        local value=queue[at] at=at+1
-        if type(value)=='function' then
-            local chunk=wh_chunk_of(value)
-            local is_c4=chunk:find('mods/etxp/c4_boundary_probe',1,true)~=nil
-            if is_c4 then saw_c4=true c4_details(value) end
-            if value==wrapper then
-                enqueue(head_above) enqueue(WH.entry) enqueue(base_prev)
-            elseif chunk:find('mods/',1,true) then
-                for i=1,64 do
-                    local name,next_=debug.getupvalue(value,i)
-                    if not name then break end
-                    if is_c4 and (name=='bindings' or name=='gameplay_guard' or name=='gate' or name=='actions')
-                       and type(next_)=='table' then captured[name]=next_ end
-                    if name~='engine' and name~='sr' and name~='G' then enqueue(next_) end
-                end
-            end
-        elseif getmetatable(value)==nil then
-            local count=0
-            for _,next_ in next,value do
-                count=count+1 if count>64 then break end
-                enqueue(next_)
-            end
-        end
-        if captured.bindings and captured.gameplay_guard and captured.gate and captured.actions then break end
-    end
-    if not captured.bindings then
-        log('runtime C4 details: binding closure not found; callback='..tostring(saw_c4)..' nodes='..(at-1))
-    end
-    for name,state in pairs(captured) do
-        local values={}
-        local function read(table_,prefix)
-            for key,value in next,table_ do
-                local kind=type(value)
-                if type(key)=='string' and (kind=='string' or kind=='number' or kind=='boolean') then
-                    values[#values+1]=prefix..key..'='..tostring(value):gsub('[\r\n]',' '):sub(1,300)
-                end
-            end
-        end
-        read(state,'')
-        for _,key in ipairs({'latest','previous','registered'}) do
-            local nested=rawget(state,key)
-            if type(nested)=='table' then read(nested,key..'.') end
-        end
-        table.sort(values)
-        log('runtime C4 '..name..': '..table.concat(values,', '))
-    end
-end
-
 M.init_elapsed_ms=(os.clock()-M.init_started)*1000
 log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d init_elapsed_ms=%.2f',
     M.version,tostring(previous~=nil),skip,#excludes,M.init_elapsed_ms))
@@ -3209,13 +1308,18 @@ log(string.format('ready v%s chain=%s boot_skip=%d exclude=%d init_elapsed_ms=%.
 
 -- Preserve every result (including trailing nil) without allocating a table
 -- or a new completion closure on each callback. Error policies remain distinct.
+local function error_text(value)
+    local ok,text=pcall(tostring,value)
+    if not ok or type(text)~='string' then return 'error value without text' end
+    return (text:gsub('[\r\n]+',' '))
+end
 local function complete_disabled(ok,...)
     inside=false
     if not ok then
         local failure=(...)
         pcall(function()
             local f=io.open(LOG..'.hb','a')
-            if f then f:write(os.date('!%H:%M:%S')..' chain error (disabled path): '..tostring(failure)..'\n') f:close() end
+            if f then f:write(os.date('!%H:%M:%S')..' chain error (disabled path): '..error_text(failure)..'\n') f:close() end
         end)
         error(failure,0)
     end
@@ -3226,19 +1330,20 @@ local function complete_chain(t0,want_throttle,manual_protection,ok,...)
     local cost=(os.clock()-t0)*1000
     if not ok then
         local failure=(...)
+        local message=error_text(failure)
         pcall(function()
-            if M._lasterr~=tostring(failure) then
-                M._lasterr=tostring(failure)
+            if M._lasterr~=message then
+                M._lasterr=message
                 local f=io.open(LOG..'.hb','a')
-                if f then f:write(os.date('!%H:%M:%S')..' chain error: '..tostring(failure)..'\n') f:close() end
+                if f then f:write(os.date('!%H:%M:%S')..' chain error: '..message..'\n') f:close() end
             end
         end)
         err_total=err_total+1
         M.errors=err_total
-        local who=tostring(failure):match('HD2%-Addon:%s*(mods/[%w_/%-]+)') or 'unknown'
+        local who=message:match('HD2%-Addon:%s*(mods/[%w_/%-]+)') or 'unknown'
         err_top[who]=(err_top[who] or 0)+1
         if err_total<=10 or err_total%100==0 then
-            log('mod chain error #'..err_total..' ['..who..']: '..tostring(failure))
+            log('mod chain error #'..err_total..' ['..who..']: '..message)
         end
     end
     stats.n=stats.n+1
@@ -3280,12 +1385,7 @@ local function complete_chain(t0,want_throttle,manual_protection,ok,...)
     end
 
     if frames%1800==0 then
-        if C4Pool.active>0 then
-            log('C4 read pool: active='..C4Pool.active..' live_reads='..C4Pool.reads())
-            C4Pool.report_probe()
-        end
         if cfg.snapshot then pcall(runtime_snapshot) end
-        if cfg.snapshot then pcall(c4_snapshot) end
         local top={}
         for k,v in pairs(err_top) do top[#top+1]=k..'='..v end
         table.sort(top,function(a,b) return tonumber(a:match('=(%d+)$'))>tonumber(b:match('=(%d+)$')) end)
@@ -3333,6 +1433,24 @@ local function complete_chain(t0,want_throttle,manual_protection,ok,...)
                 end
             end
             if #rows>0 then log('self-reported: '..table.concat(rows,', ')) end
+            -- Black box: one compact line per self-report cycle naming the held writers
+            -- allowed to write right now (ctl.open) plus the current chain head. After a
+            -- crash, the last such line is the "who could have been writing" set.
+            do
+                local open={} local nclosed=0
+                for n,h in pairs(WH.held) do
+                    if h and h.ctl then
+                        if h.ctl.open then open[#open+1]=n else nclosed=nclosed+1 end
+                    end
+                end
+                local ok_head,head=pcall(function()
+                    if WH.entry then return wh_chunk_of(WH.entry) end
+                    return 'self'
+                end)
+                if not ok_head or type(head)~='string' then head='?' end
+                log('blackbox: head='..head..' open='..#open..'['..table.concat(open,','):sub(-200)..
+                    '] held_closed='..nclosed)
+            end
         end
         calls,skipped=0,0
         stats.max=0
@@ -3347,35 +1465,44 @@ local function heartbeat(txt)
 end
 local protection_head=nil
 local protection_render=nil
-local passthrough_busy=false
+-- Bounded pass-through depth. A boolean here swallowed the *second* legitimate
+-- dispatch in the same engine call, which is the path the priority loaders use
+-- (load order observed 2026-10-06: #13 smoothboot, #14 hd2runtime, #15 hd2_scanner,
+-- i.e. both sit above us and re-enter through this shell). Allow the legal nested
+-- dispatch, break only past the cap, and keep counting evidence.
+local passthrough_depth=0
+local function reentry_cap()
+    return math.max(1,math.min(16,math.floor(tonumber(cfg.reentry_max) or 3)))
+end
 local function complete_passthrough(ok,...)
-    passthrough_busy=false
+    if passthrough_depth>0 then passthrough_depth=passthrough_depth-1 end
     if not ok then error((...),0) end
     return ...
 end
 
 wrapper=function(...)
     -- An adopted head legitimately returns through us once to reach the
-    -- original chain. If that chain dispatches through update again, another
-    -- pass-through would re-run the same chain recursively. Guard before
-    -- timing/discovery; reset on both success and error, preserving arity.
+    -- original chain. If that chain dispatches through update again, that call is
+    -- still a legal dispatch (memory scanners and runtime schedulers do it), so it
+    -- is forwarded until reentry_max nesting is reached; only then is a cycle
+    -- broken. Reset on both success and error, preserving arity.
     if inside then
-        if passthrough_busy then
+        local below=WH.entry or base_prev
+        if type(below)~='function' then return end
+        local cap=reentry_cap()
+        if passthrough_depth>=cap then
             M.reentry_cycles=(M.reentry_cycles or 0)+1
             if M.reentry_cycles==1 then
-                log('update re-entry cycle detected and broken (original chain redispatched through SmoothBoot)')
+                log(string.format('update re-entry cycle detected and broken (depth %d >= reentry_max %d, original chain redispatched through SmoothBoot)',passthrough_depth,cap))
             end
             return
         end
         in_frames=in_frames+1
-        local below=WH.entry or base_prev
-        if type(below)~='function' then return end
-        passthrough_busy=true
+        passthrough_depth=passthrough_depth+1
         return complete_passthrough(pcall(below,...))
     end
     local nowf=os.clock()
     local diag2_t0=nowf
-    if cfg.c4_cpu_profile or C4CPU.running or C4CPU.completed then C4CPU.poll(nowf)end
     if nowf>last_call then
         fi_t=fi_t+(nowf-last_call); fi_n=fi_n+1
         if fi_n>=600 then fi_t=fi_t/2; fi_n=fi_n/2 end
@@ -3418,10 +1545,6 @@ wrapper=function(...)
         local ok,err=pcall(refresh_frame_protection)
         diag2.disc=diag2.disc+(os.clock()-d1)
         if not ok then log('frame-critical discovery failed: '..tostring(err)) end
-    end
-    if frames==1 or frames%300==0 then
-        local ok,err=pcall(C4Pool.discover,{rawget(_G,'update'),head_above,WH.entry,base_prev})
-        if not ok then log('C4 read pool: setup rejected: '..tostring(err)) end
     end
     local wrs=cfg.writer_release_s or 0
     if wrs>0 and os.clock()-installed_at>=wrs then pcall(wh_release_step) end
@@ -3490,6 +1613,13 @@ wrapper=function(...)
                 if head_above then debug.setupvalue(head,slot,head_above) end
                 adopts=adopts+1
                 adopted_once[who]=true
+                if splice_kind=='indirect' then
+                    log('adopted chain head back from '..who..
+                        ' (indirect splice at depth '..tostring(splice_depth or 1)..
+                        ': another wrapper sat between us)')
+                else
+                    log('adopted chain head back from '..who..' (governor active again)')
+                end
                 head_above=head
                 gov_mark=frames
                 rawset(_G,'update',wrapper)
@@ -3547,7 +1677,6 @@ wrapper=function(...)
         if not M.tools_ready and tool_attempts<6 then provision_tools() end
         cfg=conf()
         excludes=excluded_list(cfg.exclude or '')
-        pcall(C4Pool.discover,{rawget(_G,'update'),head_above,WH.entry,base_prev})
         M.excluded_below=M.find_excluded_below()
         pcall(M.frag_check)
         if not peer_active and type(rawget(_G,'MDL'))=='table' then

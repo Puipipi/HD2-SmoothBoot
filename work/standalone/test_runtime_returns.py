@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from test_c4_ui_scope import VM
+from lua_test_vm import VM
 
 SOURCE = Path(__file__).with_name('smoothboot.lua').read_text(encoding='utf-8')
 

@@ -18,10 +18,30 @@ mods/... → your HUD mod → another mod → SmoothBoot (governor) → the rest
 **Current release: 3.0.45** — maintenance release, 2026-10-04. See
 [release notes](RELEASE-NOTES-3.0.45.md) and the [change log](CHANGELOG.md).
 
-Development candidate **3.0.46** guards the original-chain re-entry path. Its
-bounded-cycle regression and unchanged HD2Runtime 0.28.1 scheduler replay pass
-under both LuaJIT runtimes. Live crash attribution and Runtime performance
-acceptance remain open; see [candidate notes](RELEASE-NOTES-3.0.46.md).
+Development candidate **3.0.50** repairs exclusion parsing, boot-state identity,
+configurable reentry limits, Windows FFI isolation and foreign error formatting.
+New installations leave the shared GC policy unchanged; explicit existing tuning
+is preserved. C4-specific adapters remain removed. See
+[candidate notes](RELEASE-NOTES-3.0.50.md) and the
+[Bingus comparison and memory audit](docs/bingus-source-audit-2026-10-09.md).
+The author's reported in-game memory leak has not been reproduced or ruled out.
+Restart when upgrading; gameplay and memory acceptance remain open.
+
+[Download the installable 3.0.50 candidate ZIP](dist/HD2-SmoothBoot-3.0.50.zip).
+
+## Mod order: what governs what (measured 2026-10-06)
+
+Load order was read from `BingusSharedLoader.log`, not assumed. On a 46-mod install the
+manager loads `#13 mods/codex/smoothboot`, `#14 mods/skyeshade/hd2runtime`,
+`#15 mods/junze/hd2_scanner` — both priority loaders load **after** (above) SmoothBoot.
+
+| Situation | What SmoothBoot can do |
+|---|---|
+| A loader loads **above** us | It is **observed and counted** (adaptive skipping etc.), but it is not adopted: putting SmoothBoot last in the list makes it the outermost wrapper and brings the whole chain, including runtime/scanner, under governance |
+| A loader wraps us **directly** (keeps our wrapper as an upvalue) | Adopted on a frame transition, then driven once per frame (verified over 400 frames: every layer exactly 1×/frame) |
+| Another wrapper sits **between** us and the head | **Deliberately not spliced.** Splicing through the middle layer was tried and the regression suite proved it steals the upvalue the writer-interdiction gate owns (measured: Watchdog `probe_calls 0 != 361`), which would silently disable writer gating. The log tells you to put SmoothBoot last instead |
+| A peer loader appears on our chain (`mods/mdl...`) | Detected, left unmanaged by design **and** treated as a frame-critical callback, so automatic skipping stays suspended for it (`peer_suspend` cannot override that - verified) |
+| The global `MDL` table appears | Detected on the 10-second config re-read tick, then handled like any other peer |
 
 ## Status: what is verified, and what is not
 
@@ -48,7 +68,7 @@ multiplayer.
    [Releases](https://github.com/Puipipi/HD2-SmoothBoot/releases) and import it into
    your mod manager (HD2 Arsenal, MDL, …). **Do not** use GitHub's auto-generated
    *Source code* ZIP — it is not an installable addon.
-3. Enable **one** SmoothBoot only, and put it **at the bottom of the mod list**
+3. Enable **one** SmoothBoot only, and keep it **at the bottom of the mod list** (just below Bingus Shared Loader). Measured 2026-10-06: at the bottom it loads early and the writer gate works (watchdog shows `mods/<owner> [SB gate]` rows); moved to the top it loads 61st of 61, becomes the outermost wrapper, and the gate holds nothing at all (no `[SB gate]` row appears)
    (lowest priority) so it can wrap the whole chain.
 4. Deploy. Configuration lives in
    `%LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\config.txt`; it is created
@@ -73,10 +93,7 @@ are re-read while the game runs (about every 10 seconds).
 | `exclude` | `lte/helmet_cape_passives` | Comma-separated fragments of mods that must **not** be managed. Only mods below SmoothBoot on the update chain can be excluded (see Limits). |
 | `ui_chunks`, `ui_mods` | see file | Extra fragments to treat as frame-critical (HUD/drawing). Automatic detection usually makes this unnecessary. |
 | `boot_pause_s`, `boot_skip`, `boot_s`, `grace_s`, `boot_freeze_s` | `10`, `1`, `0`, `60`, off | Boot behaviour: stand the known state machines still while the engine rebuilds, skip nothing during the loading grace, optional full freeze. |
-| `c4_read_pool` | `yes` | Verified C4 1.11 native read-buffer reuse (every read is still fresh; no data is cached). |
-| `c4_context_batch`, `c4_input_batch`, `c4_native_batch`, `c4_idle_batch` | `no` | Opt-in batching of C4 context/input/native verification and the idle reload read. Each is validated against the original bytecode and restores the original method when disabled or excluded. |
-| `c4_read_profile`, `c4_cpu_profile` | `no` | Diagnostics. The CPU sampler flushes JIT traces, so never compare FPS with it running. |
-| `gc_pause`, `gc_stepmul` | `400`, `0` | Optional GC tuning for the whole mod ecosystem; engine defaults when 0. |
+| `gc_pause`, `gc_stepmul` | `0`, `0` | Optional tuning of the shared GC. Zero leaves the current engine/loader policy unchanged; existing explicit values such as 400 are preserved. |
 | `snapshot`, `diag` | `no`, `no` | Extra diagnostics: closure-graph snapshots and per-30 s `diag` / self-timing lines. |
 | `peer_suspend` | `yes` | If another chain manager (MDL) is present, leave its settings alone. |
 
@@ -134,15 +151,11 @@ entry, not proof.
 Run `Collect-Logs.bat` (next to `config.txt`) and attach the ZIP it puts on your
 desktop. It contains `SmoothBoot.log`, the watchdog log, your `config.txt` and the
 mod list — the four things needed to tell a scheduling problem from an unrelated
-one. Please also say whether SmoothBoot is the bottom entry in your mod list, and
+one. Please also say whether SmoothBoot is the bottom entry in your mod list and whether the watchdog shows any `[SB gate]` row, and
 which loader version you run.
 
 ## Provenance and credits
 
-- The `AimInputState`, `ContextReader` and C4 `AutoReload` contracts used by the
-  opt-in C4 adapters are adapted from the MIT-licensed
-  [HD2 C4 Quick Actions](https://github.com/etxp/HD2-C4-Quick-Actions); its
-  copyright and permission notice is retained in the runtime source.
 - Profiler-attribution measurements were taken with the **unchanged** Mod Lag
   Watchdog source; no third-party file is modified.
 - The Bingus addon packaging helpers are third-party and are deliberately **not**

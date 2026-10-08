@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.log
 *.zip
+!dist/HD2-SmoothBoot-3.0.50.zip
 *.dmp
 *.tmp
 outputs/*

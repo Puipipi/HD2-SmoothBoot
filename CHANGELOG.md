@@ -1,4 +1,31 @@
 # SmoothBoot change log / 变更记录
+## 3.0.50 candidate — 2026-10-09
+
+- Preserve underscores in exclusion fragments instead of splitting a mod name into unrelated matches.
+- Restore boot-paused tables by identity, including replacements under the same global name; clear saved references afterward.
+- Read `reentry_max` from configuration and clamp it to integer 1..16.
+- Resolve Windows directory APIs through private FFI aliases, following BSL's shared-state isolation pattern.
+- Protect formatting of foreign errors without changing pass-through error identity.
+- New-install GC defaults are 0/0; explicit existing settings remain intact.
+- 63 unittest methods, 8 FFI checks and the boot/writer scripts pass. Natural-GC stress did not reproduce sustained retention in the modeled paths; reported in-game leakage/crashes remain unverified. No deployment or live gameplay acceptance.
+- 排除名保留下划线；按表身份恢复暂停状态；读取重入上限；隔离 FFI 声明；保护异常文本处理。新安装默认不调整共享 GC。尚不能宣称作者反馈的实机泄漏已修复。
+
+## 3.0.49 candidate — 2026-10-09
+
+- Removed C4-specific read buffers, input/context/native adapters, discovery and CPU diagnostics. C4 now uses ordinary chain governance; its installed files are unchanged.
+- Removed adapter configuration and dedicated tests; legacy configuration keys are ignored without deleting user settings.
+- After boot-pause restoration, release saved references to foreign state tables so discarded states can be collected.
+- 57 automated tests pass, with LuaJIT compilation and isolated game-Lua-DLL checks. Gameplay, long-session memory and FPS acceptance remain pending.
+
+- 删除 C4 专用缓冲、输入/上下文/原生适配及诊断；C4 仅参与通用调用链托管，不改动其安装文件。
+- 开局暂停恢复后清理保存的外部状态引用。旧配置保留并忽略；候选版仍需实机验收。
+
+## 3.0.47 candidate — 2026-10-06
+
+- Bounded pass-through depth replaces 3.0.46's boolean swallow; legal nested dispatch is forwarded with its return values intact.
+- Cap configurable via `reentry_max` (default 3); cycles counted and logged with depth and cap.
+- Tests: reentry guard, priority loaders above us (observed load order) and runtime scheduler.
+
 
 ## 3.0.46 candidate — 2026-10-05
 

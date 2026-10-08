@@ -242,6 +242,7 @@ check("3  FIX: Clickable Scrollbars first + declarations intact",
 blocks = re.findall(r"ffi\.cdef\s*\[\[(.*?)\]\]", SRC, re.S)
 declared = set()
 for b in blocks:
+    b = re.sub(r'\s*__asm__\s*\("[^"\n]*"\)', '', b)
     for m in re.finditer(r"([A-Za-z_]\w*)\s*\([^;()]*\)\s*;", b):
         declared.add(m.group(1))
 user32_syms = {"GetCursorPos", "GetClientRect", "ScreenToClient",
@@ -269,12 +270,12 @@ info = str(rt.execute(CHAIN_HEAD + RUN + r'''
     if e then return 'smoothboot ' .. e end
     local ffi = require('ffi')
     local k32 = ffi.load('kernel32')
-    local h = k32.GetModuleHandleA('user32.dll')
+    local h = k32.smoothboot_GetModuleHandleA('user32.dll')
     if h == nil then return 'no user32 module handle' end
     local missing = {}
     for _, n in ipairs({'GetCursorPos','GetClientRect','ScreenToClient',
                         'GetForegroundWindow','GetAsyncKeyState'}) do
-        if k32.GetProcAddress(h, n) == nil then missing[#missing+1] = n end
+        if k32.smoothboot_GetProcAddress(h, n) == nil then missing[#missing+1] = n end
     end
     if #missing > 0 then return 'missing: ' .. table.concat(missing, ',') end
     return 'all resolvable'

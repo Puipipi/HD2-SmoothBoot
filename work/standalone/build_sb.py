@@ -25,7 +25,7 @@ from pathlib import Path
 import lupa.luajit21 as luajit
 
 W = str(Path(__file__).resolve().parent)
-default_out = Path(W).parents[1] / 'outputs' if Path(W).name == 'standalone' else Path(W).parent / 'dist'
+default_out = Path(W).parents[1] / 'dist' if Path(W).name == 'standalone' else Path(W).parent / 'dist'
 parser = argparse.ArgumentParser(description='Build SmoothBoot without deploying to the game.')
 parser.add_argument('--output-dir', type=Path, default=default_out)
 parser.add_argument('--validate-only', action='store_true', help='compile and audit without packaging')
@@ -51,6 +51,8 @@ USER32 = {"GetCursorPos", "GetClientRect", "ScreenToClient", "GetForegroundWindo
           "GetAsyncKeyState", "GetWindowThreadProcessId", "GetCurrentProcessId"}
 declared = set()
 for block in re.findall(r"ffi\.cdef\s*\[\[(.*?)\]\]", src, re.S):
+    # Private symbol aliases must not hide the function prototype from audit.
+    block = re.sub(r'\s*__asm__\s*\("[^"\n]*"\)', '', block)
     declared.update(m.group(1) for m in
                     re.finditer(r"([A-Za-z_]\w*)\s*\([^;()]*\)\s*;", block))
 clash = declared & USER32

@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from test_c4_ui_scope import VM
+from lua_test_vm import VM
 
 SOURCE = Path(__file__).with_name('smoothboot.lua').read_text(encoding='utf-8')
 
@@ -37,7 +37,16 @@ class ChainReentryGuard(unittest.TestCase):
                         vm.run(SOURCE)
                         vm.run('''
                             pcall(update,0.016)
-                            assert(max_depth<=2,'original chain recursively re-entered: '..max_depth)
+                            -- Bounded, not swallowed: the legal nested dispatch runs until the
+                            -- reentry cap (default 3), so the member is entered 3 times and the
+                            -- recursion stops exactly there.
+                            assert(max_depth>=2,'legal nested pass-through was swallowed: '..max_depth)
+                            -- passthrough_depth counts our shells (cap 3); the member below is
+                            -- entered once per shell, so its own depth reaches cap+1.
+                            assert(max_depth<=4,'reentry cap exceeded: '..max_depth)
+                            assert(base_calls>=2,'nested dispatch never reached the original chain')
+                            local sb=rawget(_G,'HD2SmoothBoot')
+                            assert(type(sb)=='table' and (sb.reentry_cycles or 0)>=1,'cycle was not counted')
                             redispatch=false; depth=0
                             local function check(...)
                                 assert(select('#',...)==4,'return arity lost after cycle')

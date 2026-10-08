@@ -1,8 +1,11 @@
 # HD2 SmoothBoot
 
-开发候选 **3.0.46** 已补上原链直通路径的重入保护，并通过两套 LuaJIT 的递归
-回归及 HD2Runtime 0.28.1 原始调度器回放。实机崩溃归因和 Runtime 性能验收仍待
-完成；详见 [候选说明](RELEASE-NOTES-3.0.46.md)。下方 3.0.45 验收记录属于历史版本。
+开发候选 **3.0.50** 修复排除列表解析、暂停状态身份、重入配置读取、Windows FFI 声明隔离及异常文本处理。新安装默认不调整共享 GC，已有显式配置保留；继续移除 C4 专用代码。
+保留工作区原有的有界重入保护与写入门诊断；旧 `c4_*` 配置保留但不再生效。
+升级需要重启游戏。详见 [候选说明](RELEASE-NOTES-3.0.50.md) 和 [Bingus 对照审计](docs/bingus-source-audit-2026-10-09.md)。作者反馈的实机内存泄漏尚未复现或排除；实机功能、内存及性能验收仍待完成。
+
+[下载可直接导入的 3.0.50 候选安装包](dist/HD2-SmoothBoot-3.0.50.zip)。
+下方 3.0.45 验收记录属于历史版本。
 
 [English](README.md) / 简体中文
 
@@ -39,7 +42,7 @@ mods/... → 你的 HUD 模组 → 另一个模组 → SmoothBoot（调度器）
 1. 需要 API 1 加载器：**MDL 1.4.4+** 或 **Bingus Shared Loader v15+**。
 2. 从 [Releases](https://github.com/Puipipi/HD2-SmoothBoot/releases) 下载 `HD2-SmoothBoot-3.0.45.zip`，
    导入模组管理器（HD2 Arsenal、MDL 等）。**不要**用 GitHub 自动生成的 *Source code* ZIP，那不是可安装的 addon。
-3. **只启用一个** SmoothBoot，并把它放在模组列表**最底部**（最低优先级），这样它才能包住整条链。
+3. **只启用一个** SmoothBoot，并让它保持在列表**最底部**（紧接在 Bingus Shared Loader 之下）。2026-10-06 实测：放最底部时它先加载、写入门有效（watchdog 出现 `mods/<owner> [SB gate]` 行）；移到最顶部后它第 61/61 个加载、成为最外层，但门**一个也托管不住**（完全没有 [SB gate] 行）。
 4. 部署。配置位于 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\SmoothBoot\config.txt`，
    首次运行时生成，之后不会被覆盖。
 
@@ -60,10 +63,7 @@ mods/... → 你的 HUD 模组 → 另一个模组 → SmoothBoot（调度器）
 | `exclude` | `lte/helmet_cape_passives` | 逗号分隔的**不托管**模组片段。只有位于 SmoothBoot **下方且在 update 链上**的模组才能被排除（见"限制"）。 |
 | `ui_chunks`、`ui_mods` | 见文件 | 额外指定为帧关键的片段（HUD/绘制）。有自动识别后通常不需要。 |
 | `boot_pause_s`、`boot_skip`、`boot_s`、`grace_s`、`boot_freeze_s` | `10`、`1`、`0`、`60`、关 | 启动期行为：引擎重建期间让已知状态机停住、加载宽限期内不跳帧、可选的完全冻结。 |
-| `c4_read_pool` | `yes` | 已核对的 C4 1.11 原生读取缓冲复用（每次仍是新读取，不缓存数据）。 |
-| `c4_context_batch`、`c4_input_batch`、`c4_native_batch`、`c4_idle_batch` | `no` | 可选：C4 上下文/按键/原生校验与空闲装填读取的分块。每一项都与原始字节码对照验证，关闭或加入排除名单即还原原实现。 |
-| `c4_read_profile`、`c4_cpu_profile` | `no` | 诊断用。CPU 采样会清空 JIT 轨迹，开着它不要比较帧率。 |
-| `gc_pause`、`gc_stepmul` | `400`、`0` | 可选的全局 GC 调参；为 0 时使用引擎默认。 |
+| `gc_pause`、`gc_stepmul` | `0`、`0` | 可选的共享 GC 调参；0 表示不改当前引擎/加载器策略，已有显式值（如 400）保留。 |
 | `snapshot`、`diag` | `no`、`no` | 额外诊断：闭包图快照，以及每 30 秒的 `diag` / 自计时行。 |
 | `peer_suspend` | `yes` | 检测到另一个链管理器（MDL）时，不干预它的设置。 |
 
@@ -113,12 +113,10 @@ python -B work/standalone/test_sb6_ffi.py                      # 需要本机有
 
 运行 `Collect-Logs.bat`（在 `config.txt` 同目录），把桌面上生成的 ZIP 附上。里面有
 `SmoothBoot.log`、watchdog 日志、你的 `config.txt` 和模组列表——判断"调度问题"还是"无关问题"所需的四样东西。
-另外请说明 SmoothBoot 是否在你模组列表的最底部，以及你使用的加载器版本。
+另外请说明 SmoothBoot 是否在你模组列表的最底部、watchdog 里是否出现 `[SB gate]` 行，以及你使用的加载器版本。
 
 ## 来源与致谢
 
-- 可选 C4 适配器使用的 `AimInputState`、`ContextReader` 与 C4 `AutoReload` 契约改编自 MIT 许可的
-  [HD2 C4 Quick Actions](https://github.com/etxp/HD2-C4-Quick-Actions)，其版权与许可声明保留在运行源码中。
 - 性能归属测量使用**未改动**的 Mod Lag Watchdog 源码，未修改任何第三方文件。
 - Bingus addon 打包辅助工具属第三方，本仓库**有意不重新分发**——见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

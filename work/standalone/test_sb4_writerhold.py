@@ -2,7 +2,7 @@
 """SmoothBoot 2.17.1 writer-hold regression suite (real-topology edition).
 
 Mirrors the actual machine layout:
-  BELOW  : c4(previous_update) -> ambiguous(unnamed prev + same-chunk helper)
+  BELOW  : innocent_reader(previous_update) -> ambiguous(unnamed prev + same-chunk helper)
            -> gp20(writer) -> smarter -> game
   SB     : installs between the segments (real loader order puts SB mid-chain)
   ABOVE  : cak -> p33(writer) -> p2p -> m103(writer, 'original')
@@ -33,7 +33,7 @@ import lupa
 W = os.path.dirname(os.path.abspath(__file__))
 SRC = open(os.path.join(W, "smoothboot.lua"), encoding="utf-8").read()
 VER = re.search(r"version='([\d.]+)'", SRC).group(1)
-assert VER == "2.17.1", "source must be 2.17.1, got " + VER
+assert re.match(r"3\.[0-9]+\.[0-9]+", VER), "source must be 3.x, got " + VER
 
 REAL = os.path.join(os.environ["LOCALAPPDATA"], "CowboyBingus", "Helldivers2")
 
@@ -136,7 +136,7 @@ _G.CowboyBingusModLoader={api=1,version='test'}
 load_mod('mods/cowboybingus/smarter_guards', innocent_body('smarter'))
 load_mod('mods/codex/gp20_ultimatum_ammo', writer_body('mods/codex/gp20_ultimatum_ammo', 40))
 loadstring(AMB_BODY,'@mods/codex/ambiguous_mod')()
-load_mod('mods/etxp/c4_boundary_probe', innocent_body('mods/etxp/c4_boundary_probe'))
+load_mod('mods/test/innocent_reader', innocent_body('mods/test/innocent_reader'))
 
 -- ===== SmoothBoot installs mid-chain, like the real loader order =====
 local ok,err=pcall(loadstring(src,'@mods/codex/smoothboot'))
@@ -171,7 +171,7 @@ ck('T2 above innocents frozen (cak/p2p/wdt)',
     REG['mods/shock233/p2p_ping'].ticks<=1 and REG['wdt'].ticks<=1)
 ck('T3 below innocents ticked every frame',
     REG['smarter'].ticks==100 and REG['amb'].ticks==100 and
-    REG['mods/etxp/c4_boundary_probe'].ticks==100)
+    REG['mods/test/innocent_reader'].ticks==100)
 ck('T4 game ran every tick',game==100)
 ck('T4 passthrough preserved',passthrough)
 ck('T5 takeover active (_G.update==wrapper)',_G.update==SBW)

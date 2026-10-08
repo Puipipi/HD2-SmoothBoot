@@ -104,67 +104,7 @@ class RuntimePerformance(unittest.TestCase):
             self.assertEqual(rt.globals().base_calls,60)
             self.assertEqual([rt.globals().ticks[i] for i in (1,2,3)],[60,40,20])
 
-    def test_c4_observer_reaches_tick_under_watchdog_metadata(self):
-        with tempfile.TemporaryDirectory(prefix='sb-c4-graph-') as tmp:
-            home=pathlib.Path(tmp)/'CowboyBingus/Helldivers2'
-            (home/'SmoothBoot').mkdir(parents=True)
-            (home/'Logs').mkdir()
-            (home/'SmoothBoot/config.txt').write_text('diag=yes\nsnapshot=yes\nthrottle=no\nboot_pause_s=0\nhud=off\nwriters=\n',encoding='utf-8')
-            rt=luajit.LuaRuntime()
-            rt.globals().os.getenv=lambda key: tmp if key=='LOCALAPPDATA' else None
-            rt.execute('''
-                CowboyBingusModLoader={}
-                local metadata={}
-                for i=1,64 do
-                    metadata[i]={}
-                    for j=1,64 do metadata[i][j]={} end
-                end
-                local c4=assert(loadstring([[
-                    local bindings={status='ready',armed=false,registered={deploy=true}}
-                    local gameplay_guard={status='gameplay',latest={controls_allowed=true}}
-                    local gate={owned=false,status='no_local_c4'}
-                    local actions={fault=false}
-                    local function tick()
-                        return bindings.status,gameplay_guard.status,gate.status,actions.fault
-                    end
-                    local function pass(...) return tick(),... end
-                    return function(...) return pass(...) end
-                ]], '-- HD2-Addon: mods/etxp/c4_boundary_probe'))()
-                update=assert(loadstring([[
-                    local metadata,previous_update=...
-                    return function(...) if metadata then return previous_update(...) end end
-                ]], '-- HD2-Addon: mods/patpatpatrick/mod_lag_finder'))(metadata,c4)
-            ''')
-            rt.execute(SOURCE)
-            rt.execute('for i=1,1800 do update(0.016) end')
-            log=(home/'Logs/SmoothBoot.log').read_text(encoding='utf-8')
-            self.assertIn('runtime C4 bindings: armed=false',log)
-            self.assertIn('status=no_local_c4',log)
 
-    def test_c4_diagnostics_observe_guard_without_calling_it(self):
-        with tempfile.TemporaryDirectory(prefix='sb-c4-') as tmp:
-            home=pathlib.Path(tmp)/'CowboyBingus/Helldivers2'
-            (home/'SmoothBoot').mkdir(parents=True)
-            (home/'Logs').mkdir()
-            (home/'SmoothBoot/config.txt').write_text('diag=yes\nsnapshot=yes\nthrottle=no\nboot_pause_s=0\nhud=off\nwriters=\n',encoding='utf-8')
-            rt=luajit.LuaRuntime()
-            rt.globals().os.getenv=lambda key: tmp if key=='LOCALAPPDATA' else None
-            rt.execute('''
-                CowboyBingusModLoader={}; field_calls=0
-                update=assert(loadstring([[
-                    local bindings={status='unavailable',reason='registration_rejected'}
-                    local gameplay_guard={status='native_game_ui_active',latest={controls_allowed=false}}
-                    gameplay_guard.fields=function() field_calls=field_calls+1; error('must not be called') end
-                    local function tick() return bindings.status,gameplay_guard.status end
-                    return function(...) tick(); return ... end
-                ]], '-- HD2-Addon: mods/etxp/c4_boundary_probe'))()
-            ''')
-            rt.execute(SOURCE)
-            rt.execute('for i=1,1800 do update(0.016) end')
-            log=(home/'Logs/SmoothBoot.log').read_text(encoding='utf-8')
-            self.assertIn('runtime C4 bindings: reason=registration_rejected, status=unavailable',log)
-            self.assertIn('latest.controls_allowed=false',log)
-            self.assertEqual(rt.globals().field_calls,0)
 
     def test_stable_reheading_function_is_identified_once(self):
         with tempfile.TemporaryDirectory(prefix='sb-perf-') as tmp:
